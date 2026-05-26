@@ -1,9 +1,9 @@
 # GitHub Society Intelligence
 
-#### Please read [more](.github-minimum-intelligence/README.md) before you install this AI Agent.
+#### Please read [more](.github-society-intelligence/README.md) before you install this AI Agent.
 
 <p align="center">
   <picture>
-    <img src="https://raw.githubusercontent.com/japer-technology/github-minimum-intelligence/main/.github-minimum-intelligence/logo.png" alt="Minimum Intelligence" width="500">
+    <img src="https://raw.githubusercontent.com/japer-technology/github-society-intelligence/main/.github-society-intelligence/logo.png" alt="Society Intelligence" width="500">
   </picture>
 </p>
