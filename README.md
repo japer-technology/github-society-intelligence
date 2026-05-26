@@ -1,4 +1,4 @@
-# GitHub Minimum Intelligence
+# GitHub Society Intelligence
 
 #### Please read [more](.github-minimum-intelligence/README.md) before you install this AI Agent.
 
