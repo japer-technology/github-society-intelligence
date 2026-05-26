@@ -7,7 +7,7 @@ A repository-local AI framework that plugs into a developer’s existing workflo
 ## Installation
 
 1. Copy [`.github/workflows/github-society-intelligence-agent.yml`](../.github/workflows/github-society-intelligence-agent.yml) into your repo's `.github/workflows/` directory.
-2. Add the LLM API key `OPENAI_API_KEY` as a **repository secret** under **[Settings → Secrets and variables → Actions]**. Any [supported LLM provider](#supported-providers) can work but to quick start OpenAI GPT 5.4 is pre-configured.
+2. Add the LLM API key `OPENAI_API_KEY` as a **repository secret** under **[Settings → Secrets and variables → Actions]**. Any [supported LLM provider](#supported-providers) can work but to quick start OpenAI GPT 5.5 is pre-configured.
 3. Go to **[Actions → github-society-intelligence-agent → Run workflow]** to install the agent files automatically, subsequent runs perform upgrades.
 4. Open an issue — the agent will reply.
 <p align="center">
@@ -16,7 +16,7 @@ A repository-local AI framework that plugs into a developer’s existing workflo
   </picture>
 </p>
 
-## An AI agent that lives in your GitHub Repo
+## A society of AI agents that live in your GitHub Repo
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) ![AI](https://img.shields.io/badge/Assisted-Development-2b2bff?logo=openai&logoColor=white) [![github-society-intelligence-agent](https://github.com/japer-technology/github-society-intelligence/actions/workflows/github-society-intelligence-agent.yml/badge.svg)](https://github.com/japer-technology/github-society-intelligence/actions/workflows/github-society-intelligence-agent.yml)
 
