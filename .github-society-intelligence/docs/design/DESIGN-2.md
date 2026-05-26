@@ -1115,4 +1115,4 @@ DESIGN-2 shows how the repo can learn what kind of thinker it is becoming.
 
 ---
 
-*Source material: [`DESIGN-1.md`](DESIGN-1.md), [`research/THE-SOCIETY-OF-REPO/`](research/THE-SOCIETY-OF-REPO/), [`research/THE-SOCIETY-OF-MIND/`](research/THE-SOCIETY-OF-MIND/), [`research/THE-REPO-IS-SOCIETY/`](research/THE-REPO-IS-SOCIETY/), and [`research/FORGEJO-SOCIETY-IMPLEMENTATION/`](research/FORGEJO-SOCIETY-IMPLEMENTATION/). DESIGN-2 is a synthesis of the deeper research layer and a direct successor to DESIGN-1.*
+*Source material: [`DESIGN-1.md`](DESIGN-1.md), [`research/THE-SOCIETY-OF-REPO/`](../../../research/THE-SOCIETY-OF-REPO/), [`research/THE-SOCIETY-OF-MIND/`](../../../research/THE-SOCIETY-OF-MIND/), [`research/THE-REPO-IS-SOCIETY/`](../../../research/THE-REPO-IS-SOCIETY/), and [`research/FORGEJO-SOCIETY-IMPLEMENTATION/`](../../../research/FORGEJO-SOCIETY-IMPLEMENTATION/). DESIGN-2 is a synthesis of the deeper research layer and a direct successor to DESIGN-1.*

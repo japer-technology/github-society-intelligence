@@ -61,6 +61,18 @@ Six questions define the philosophical and architectural foundation of this proj
 
 ---
 
+## Design
+
+| Document | Description |
+|----------|-------------|
+| [DESIGN-1](./design/DESIGN-1.md) | First great attempt at implementing *Society of Mind* on GitHub primitives, single-repo. |
+| [DESIGN-2](./design/DESIGN-2.md) | Second great attempt: a reflective society that can inspect and revise its own structures. |
+| [DESIGN-3](./design/DESIGN-3.md) | Third great attempt: a federation of societies speaking through governed channels. |
+| [DESIGN](./design/DESIGN.md) | The consolidated federation-scale design (a society of societies). |
+| [ANALYSIS](./design/ANALYSIS.md) | Deep analysis of how `DESIGN.md` would be implemented with the full *Society of Mind* in a **single repository** as a massive enhancement of `.github-society-intelligence/`. |
+
+---
+
 ## Agent Configuration
 
 | Document | Location | Description |
