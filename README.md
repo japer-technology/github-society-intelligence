@@ -18,7 +18,9 @@ GitHub Society Intelligence is a repository-local AI framework that turns a sing
 
 | Document | What it is |
 | --- | --- |
-| [`DESIGN-1.md`](DESIGN-1.md) | **First great attempt** at implementing Marvin Minsky's *Society of Mind* using repo-based AI agents that think on branches. The single most concrete document in this repository — read this first if you want to know what we are actually building. |
+| [`.github-society-intelligence/docs/design/DESIGN-1.md`](.github-society-intelligence/docs/design/DESIGN-1.md) | **First great attempt** at implementing Marvin Minsky's *Society of Mind* using repo-based AI agents that think on branches. The single most concrete document in this repository — read this first if you want to know what we are actually building. |
+| [`.github-society-intelligence/docs/design/DESIGN.md`](.github-society-intelligence/docs/design/DESIGN.md) | The federation-scale design: a society of societies across many repositories. |
+| [`.github-society-intelligence/docs/design/ANALYSIS.md`](.github-society-intelligence/docs/design/ANALYSIS.md) | Deep analysis of how `DESIGN.md` would be implemented with the full *Society of Mind* collapsed into a **single repository** as a massive enhancement of `.github-society-intelligence/`. |
 | [`.github-society-intelligence/README.md`](.github-society-intelligence/README.md) | The installable agent runtime today: one workflow file, GitHub Issues as the conversation surface, Git as persistent memory. |
 | [`research/THE-SOCIETY-OF-REPO/README.md`](research/THE-SOCIETY-OF-REPO/README.md) | The full specification of a repo-native cognitive society — governance, protocols, agencies, critics, censors, memory, workspace, services, channels, evolution. |
 | [`research/THE-SOCIETY-OF-MIND/`](research/THE-SOCIETY-OF-MIND/) | The source-text companion to Minsky's *The Society of Mind* (1986) and the term-by-term crosswalk to the Society-of-Repo vocabulary. |
@@ -29,7 +31,7 @@ GitHub Society Intelligence is a repository-local AI framework that turns a sing
 
 ## The bet, in one paragraph
 
-Most attempts to build multi-agent AI systems reach for a custom framework and a vector store, then bolt cognitive metaphors on top. We make the opposite bet: **GitHub already is the substrate**. A Git branch is the natural physical realisation of a Minsky-style *thought* — insulated, speculative, inspectable, cheap, composable, and reviewable. A pull request is the natural realisation of a *settlement* — a visible record of how a judgment formed, with structured criticism, hard censorship via required checks, and human approval where the constitution demands it. The full design lives in [`DESIGN-1.md`](DESIGN-1.md).
+Most attempts to build multi-agent AI systems reach for a custom framework and a vector store, then bolt cognitive metaphors on top. We make the opposite bet: **GitHub already is the substrate**. A Git branch is the natural physical realisation of a Minsky-style *thought* — insulated, speculative, inspectable, cheap, composable, and reviewable. A pull request is the natural realisation of a *settlement* — a visible record of how a judgment formed, with structured criticism, hard censorship via required checks, and human approval where the constitution demands it. The full design lives in [`.github-society-intelligence/docs/design/DESIGN-1.md`](.github-society-intelligence/docs/design/DESIGN-1.md).
 
 ---
 
@@ -59,7 +61,7 @@ Every artifact is a file, a commit, a PR, a label, a check, a review, or an issu
 This repository holds three concentric layers:
 
 1. **The installable runtime** ([`.github-society-intelligence/`](.github-society-intelligence/)) — works today as a single-workflow GitHub Actions agent with Git-versioned memory.
-2. **The design** ([`DESIGN-1.md`](DESIGN-1.md)) — the first opinionated attempt at evolving the runtime into a full Minsky-style society on GitHub primitives.
+2. **The design** ([`.github-society-intelligence/docs/design/`](.github-society-intelligence/docs/design/)) — the opinionated attempts at evolving the runtime into a full Minsky-style society (and federation) on GitHub primitives, plus an analysis of how the federation design collapses into a single repo as a massive enhancement of the runtime.
 3. **The research** ([`research/`](research/)) — the deep theoretical and architectural grounding the design draws on.
 
-Read [`DESIGN-1.md`](DESIGN-1.md) to see how they connect.
+Read [`.github-society-intelligence/docs/design/DESIGN-1.md`](.github-society-intelligence/docs/design/DESIGN-1.md) to see how they connect.

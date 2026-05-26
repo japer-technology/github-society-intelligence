@@ -4,7 +4,7 @@
 
 > The forge is the mind. The repo is an agency. The branch is a thought. The pull request is a proposal. The review is criticism. The merge is a committed change to the organism.
 
-This document is a *first great attempt* — not a final specification. It is the smallest design that takes Marvin Minsky's *Society of Mind* seriously and maps it, end-to-end, onto primitives that already exist inside GitHub: **repositories, branches, issues, pull requests, reviews, labels, commits, Actions, and merges**. It draws directly on the deep research held under [`research/THE-SOCIETY-OF-REPO/`](research/THE-SOCIETY-OF-REPO/README.md) and the source-text companion under [`research/THE-SOCIETY-OF-MIND/`](research/THE-SOCIETY-OF-MIND/) but takes a strong, opinionated position about *what to build first*.
+This document is a *first great attempt* — not a final specification. It is the smallest design that takes Marvin Minsky's *Society of Mind* seriously and maps it, end-to-end, onto primitives that already exist inside GitHub: **repositories, branches, issues, pull requests, reviews, labels, commits, Actions, and merges**. It draws directly on the deep research held under [`research/THE-SOCIETY-OF-REPO/`](../../../research/THE-SOCIETY-OF-REPO/README.md) and the source-text companion under [`research/THE-SOCIETY-OF-MIND/`](../../../research/THE-SOCIETY-OF-MIND/) but takes a strong, opinionated position about *what to build first*.
 
 The goal is concrete: a developer can install this on a GitHub repository and, within an hour, watch a small society of agents wake, propose on branches, criticise each other in pull requests, get blocked by censors, settle, merge, remember, and learn — all inside GitHub, with no external infrastructure.
 
@@ -38,7 +38,7 @@ Every other design decision in this document follows from this bet.
 
 ## 2. Minsky's vocabulary, mapped to GitHub
 
-The full term-by-term crosswalk lives under [`research/THE-SOCIETY-OF-MIND/12-crosswalk-to-society-of-repo.md`](research/THE-SOCIETY-OF-MIND/). DESIGN-1 narrows that map to the **minimum set** an implementation needs to be honestly Minskyan on GitHub:
+The full term-by-term crosswalk lives under [`research/THE-SOCIETY-OF-MIND/12-crosswalk-to-society-of-repo.md`](../../../research/THE-SOCIETY-OF-MIND/). DESIGN-1 narrows that map to the **minimum set** an implementation needs to be honestly Minskyan on GitHub:
 
 | Minsky concept | GitHub primitive | Notes |
 | --- | --- | --- |
@@ -68,7 +68,7 @@ This is enough vocabulary to build something real.
 
 ## 3. The cognitive loop on GitHub
 
-The full loop from [`research/THE-SOCIETY-OF-REPO/00-foundations/02-cognitive-loop.md`](research/THE-SOCIETY-OF-REPO/00-foundations/02-cognitive-loop.md), expressed entirely in GitHub primitives:
+The full loop from [`research/THE-SOCIETY-OF-REPO/00-foundations/02-cognitive-loop.md`](../../../research/THE-SOCIETY-OF-REPO/00-foundations/02-cognitive-loop.md), expressed entirely in GitHub primitives:
 
 ```mermaid
 flowchart TB
@@ -150,7 +150,7 @@ The PR description is a rendered view of `settlement.yaml`. The diff *is* the pr
 
 ## 5. Repository layout
 
-DESIGN-1 lives inside *one* repository as a starting point (Level 2–3 on the maturity ladder in [`research/THE-SOCIETY-OF-REPO/00-foundations/03-maturity-model.md`](research/THE-SOCIETY-OF-REPO/00-foundations/03-maturity-model.md)). Multi-repo societies (Level 4+) come later.
+DESIGN-1 lives inside *one* repository as a starting point (Level 2–3 on the maturity ladder in [`research/THE-SOCIETY-OF-REPO/00-foundations/03-maturity-model.md`](../../../research/THE-SOCIETY-OF-REPO/00-foundations/03-maturity-model.md)). Multi-repo societies (Level 4+) come later.
 
 ```
 <your-repo>/
@@ -291,7 +291,7 @@ A separate scheduled workflow, `observe.yml`, runs every N minutes and looks *on
 
 When it detects an unhealthy pattern (oscillation, deadlock, runaway activation, censor saturation, single-agency dominance), it opens an issue tagged `b-brain/anomaly` against the meta-admin agency. The meta-admin agency then proposes structural changes through the normal settlement loop. The B-brain has no merge authority. It can only *speak*.
 
-Full spec lives at [`research/THE-SOCIETY-OF-REPO/02-protocols/19-b-brain-observation.md`](research/THE-SOCIETY-OF-REPO/02-protocols/19-b-brain-observation.md).
+Full spec lives at [`research/THE-SOCIETY-OF-REPO/02-protocols/19-b-brain-observation.md`](../../../research/THE-SOCIETY-OF-REPO/02-protocols/19-b-brain-observation.md).
 
 ---
 
@@ -322,12 +322,12 @@ That is one complete loop. Every artifact is a file, a commit, a PR, a label, a 
 
 A first great attempt earns its honesty by saying what it omits. DESIGN-1 leaves the following for DESIGN-2 and beyond:
 
-- **Multi-repo societies** (Level 4+ on the maturity ladder). DESIGN-1 is single-repo. Cross-repo activation, service channels, reciprocal credits, and inter-society reputation are out of scope here. See [`research/THE-SOCIETY-OF-REPO/09-channels/`](research/THE-SOCIETY-OF-REPO/09-channels/) and [`research/THE-SOCIETY-OF-REPO/02-protocols/07-service-channel.md`](research/THE-SOCIETY-OF-REPO/02-protocols/07-service-channel.md).
-- **Frame-array and transframe machinery**. DESIGN-1 has flat frames. The viewpoint-bridging machinery from [`research/THE-SOCIETY-OF-REPO/02-protocols/09-representation.md`](research/THE-SOCIETY-OF-REPO/02-protocols/09-representation.md) and [`research/THE-SOCIETY-OF-REPO/02-protocols/18-bridges.md`](research/THE-SOCIETY-OF-REPO/02-protocols/18-bridges.md) is out of scope.
+- **Multi-repo societies** (Level 4+ on the maturity ladder). DESIGN-1 is single-repo. Cross-repo activation, service channels, reciprocal credits, and inter-society reputation are out of scope here. See [`research/THE-SOCIETY-OF-REPO/09-channels/`](../../../research/THE-SOCIETY-OF-REPO/09-channels/) and [`research/THE-SOCIETY-OF-REPO/02-protocols/07-service-channel.md`](../../../research/THE-SOCIETY-OF-REPO/02-protocols/07-service-channel.md).
+- **Frame-array and transframe machinery**. DESIGN-1 has flat frames. The viewpoint-bridging machinery from [`research/THE-SOCIETY-OF-REPO/02-protocols/09-representation.md`](../../../research/THE-SOCIETY-OF-REPO/02-protocols/09-representation.md) and [`research/THE-SOCIETY-OF-REPO/02-protocols/18-bridges.md`](../../../research/THE-SOCIETY-OF-REPO/02-protocols/18-bridges.md) is out of scope.
 - **Economic layer**. No metered services, no reciprocal credits, no reputation. The society is private and free at this level.
-- **Recognition vs reconstruction**. DESIGN-1 collapses the two memory operations from [`research/THE-SOCIETY-OF-REPO/02-protocols/06-memory.md`](research/THE-SOCIETY-OF-REPO/02-protocols/06-memory.md) into a single retrieval step. A real implementation should separate them.
+- **Recognition vs reconstruction**. DESIGN-1 collapses the two memory operations from [`research/THE-SOCIETY-OF-REPO/02-protocols/06-memory.md`](../../../research/THE-SOCIETY-OF-REPO/02-protocols/06-memory.md) into a single retrieval step. A real implementation should separate them.
 - **Multi-self-model arbitration**. DESIGN-1 keeps one `self-model.yaml`. Minsky argued for several; that comes later.
-- **Forgejo parity**. The sibling design [`research/THE-SOCIETY-OF-REPO/02-protocols/15-forgejo-environment.md`](research/THE-SOCIETY-OF-REPO/02-protocols/15-forgejo-environment.md) targets self-hosted Forgejo. DESIGN-1 chooses GitHub.com as the substrate because the install path is *one workflow file*. A Forgejo port is straightforward but separate.
+- **Forgejo parity**. The sibling design [`research/THE-SOCIETY-OF-REPO/02-protocols/15-forgejo-environment.md`](../../../research/THE-SOCIETY-OF-REPO/02-protocols/15-forgejo-environment.md) targets self-hosted Forgejo. DESIGN-1 chooses GitHub.com as the substrate because the install path is *one workflow file*. A Forgejo port is straightforward but separate.
 
 ---
 
@@ -378,4 +378,4 @@ We do not need to build a mind. We need to admit we have been working inside one
 
 ---
 
-*Source material: [`research/THE-SOCIETY-OF-MIND/`](research/THE-SOCIETY-OF-MIND/) (Minsky, 1986) and [`research/THE-SOCIETY-OF-REPO/`](research/THE-SOCIETY-OF-REPO/README.md) (the full SOR specification). DESIGN-1 is one opinionated reading of both. It is meant to be argued with.*
+*Source material: [`research/THE-SOCIETY-OF-MIND/`](../../../research/THE-SOCIETY-OF-MIND/) (Minsky, 1986) and [`research/THE-SOCIETY-OF-REPO/`](../../../research/THE-SOCIETY-OF-REPO/README.md) (the full SOR specification). DESIGN-1 is one opinionated reading of both. It is meant to be argued with.*
