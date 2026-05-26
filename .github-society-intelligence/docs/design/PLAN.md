@@ -98,6 +98,16 @@ The twelve from `ANALYSIS.md §13`, in the order the stages enable them:
 | C-SR    | `censor/silent-retry`          | retry settlements | `§23` |
 | C-SIG   | `censor/commit-signature`      | every PR | `§12` |
 
+Three additional required checks are introduced by this plan as **plan-only scaffolds** — they realise disciplines named in `ANALYSIS.md` that are not enumerated in `§13`'s list, but which §B's stated role as the union of every artifact requires us to list here:
+
+| ID | Check | Where it runs | Source | Enabling stage |
+| --- | --- | --- | --- | --- |
+| C-CA  | `censor/credit-assignment`         | every settlement PR | `§16` (every settlement carries a credit-assignment record) | Stage 3 |
+| C-CW  | `censor/consolidation-window`      | memory-promoting PRs | `§3`, `§15` (consolidation before memory promotion) | Stage 4 |
+| C-BCA | `censor/b-brain-content-access`    | PRs from agencies under `agencies/b-brains/**` | `§18` (B-brains read metadata only) | Stage 5 |
+
+These three are flagged because they enforce ANALYSIS-mandated invariants that would otherwise be discretionary; they are not optional extensions.
+
 ### B.5 CODEOWNERS rules
 
 Per `ANALYSIS.md §12`, lines added to `.github/CODEOWNERS` as their directories are created:
@@ -157,7 +167,7 @@ The stages are sequential: each stage presupposes its predecessor. **A stage doe
 - **Deliverables.**
   - **S1-D1.** Create `agencies/conversational-bee/` as the rewritten current responder, with `constitution.yaml`, `handlers/`, `state/`. The existing `lifecycle/agent.ts` is *referenced* by the handler; not moved yet.
   - **S1-D2.** Create `governance/constitution.yaml`, `governance/self-ideals.yaml` (use `ANALYSIS.md §12.3` self-ideals verbatim as the starting set), `governance/authority-registry.yaml`, `governance/rights-registry.yaml`, `governance/approval-gates/`, `governance/commands/`.
-  - **S1-D3.** Create `memory/{events,episodic,semantic,procedural,failure,frames,klines,analogies,concepts,decisions,recognition-index,consolidation-queue,credit-assignment,suppressor-catches}/` — each with a `README.md` and `.gitkeep`. (`memory/ledger/` is deferred to Stage 7; `memory/concepts/` and friends gain real entries from Stage 4 onward.)
+  - **S1-D3.** Create `memory/{events,episodic,semantic,procedural,failure,frames,klines,analogies,concepts,decisions,recognition-index,consolidation-queue,credit-assignment,suppressor-catches}/` — each with a `README.md` and `.gitkeep`. (`memory/ledger/` is deferred to Stage 7; entries inside `memory/concepts/`, `memory/frames/`, `memory/klines/`, and `memory/analogies/` are populated from Stage 4 onward.)
   - **S1-D4.** Create society-level files: F-CONST, F-REP, F-INS, F-MAT. `F-MAT` carries `economic_layer_enabled: false` and the full `ANALYSIS.md §24` checklist, all unchecked.
   - **S1-D5.** Create `settlements/`, `workspace/active-settlements/`, `workspace/focus.yaml`, `state/self-models/`, `state/self-ideals/`, `state/windows/`, `state/observability/`, `state/ecology-reports/`.
   - **S1-D6.** Create `.github/CODEOWNERS` with the rules listed in §B.5. Resolve the placeholder team handles to real GitHub teams (or to specific user handles if a team does not yet exist).
@@ -192,9 +202,9 @@ The stages are sequential: each stage presupposes its predecessor. **A stage doe
   - **S3-D3.** Create `agencies/conversational-bee/channels/critic-bee.yaml` pinning the contract file SHA.
   - **S3-D4.** Implement W-DLG (`delegate.yml`) as the in-repo channel transport: a `workflow_dispatch`/`workflow_run` wrapper that carries payload hash + contract SHA, identical in shape to a future `repository_dispatch`.
   - **S3-D5.** Implement and enable as required checks: C-EGR (outbound; runs on PRs touching `agencies/<requester>/channels/**` and on any PR triggering W-DLG), C-INR (inbound; runs on the provider's intake workflow), C-DEP (caps `delegation_depth: 1` for this stage).
-  - **S3-D6.** Populate `governance/schemas/credit-assignment.schema.yaml`; require a `memory/credit-assignment/<settlement-id>.yaml` file on every settlement PR via a new required check `censor/credit-assignment` (an instance of `§16`'s rule; identified as plan-only scaffold extension to the §B.4 list).
+  - **S3-D6.** Populate `governance/schemas/credit-assignment.schema.yaml`; enable C-CA (`censor/credit-assignment`, listed in §B.4) to require a `memory/credit-assignment/<settlement-id>.yaml` file on every settlement PR, per `§16`.
   - **S3-D7.** Execute one inter-agency settlement end-to-end: a conversational-bee → critic-bee call that passes C-EGR, C-INR, C-DEP, writes a credit-assignment record, and merges through W-STL.
-- **Required checks newly enabled.** C-EGR, C-INR, C-DEP, `censor/credit-assignment`.
+- **Required checks newly enabled.** C-EGR, C-INR, C-DEP, C-CA.
 - **Exit criteria.** The end-to-end inter-agency settlement merges; the credit-assignment record is present on `main`; an attempted bypass (a PR that calls W-DLG without a pinned contract SHA) is rejected.
 - **Rollback.** Revert the channel file; W-DLG remains but is no longer called. The two agencies revert to operating only on their own PRs.
 - **Trace.** `ANALYSIS.md §28 Stage 3`, §8, §10, §13, §16.
@@ -208,8 +218,8 @@ The stages are sequential: each stage presupposes its predecessor. **A stage doe
   - **S4-D3.** Implement W-CON: every memory-promoting PR sits in `memory/consolidation-queue/` for the configured window before W-STL closes it.
   - **S4-D4.** Extend the settlement schema to require `transframe.before`, `transframe.after`, `unknowns`, `blind_spots`, `budgets.{calls,seconds,cost,bridges}`, `frame_used`, `klines_activated`, `analogies_invoked`. C-RC enforces the schema.
   - **S4-D5.** Populate the first real entries in `memory/frames/`, `memory/klines/`, `memory/analogies/`, `memory/concepts/` (each `concepts/<c>.yaml` requires non-empty `examples:` and `non_examples:`).
-  - **S4-D6.** Extend the credit-assignment schema to cover all fourteen local credit targets in `ANALYSIS.md §16`; `censor/credit-assignment` fails PRs whose records omit any target that applies.
-- **Required checks newly enabled.** A `censor/consolidation-window` check that fails PRs promoting memory whose consolidation window is not closed (plan-only scaffold extending §B.4; faithful to `§3` and `§15`).
+  - **S4-D6.** Extend the credit-assignment schema to cover all fourteen local credit targets in `ANALYSIS.md §16`; C-CA fails PRs whose records omit any target that applies.
+- **Required checks newly enabled.** C-CW (`censor/consolidation-window`, listed in §B.4): fails PRs promoting memory whose consolidation window is not closed, per `§3` and `§15`.
 - **Exit criteria.** One full cognitive-loop run produces a settlement that names the frame, K-lines, analogies, budgets, transframe, unknowns, and blind spots; the consolidation window is observed; the credit-assignment record covers all fourteen targets.
 - **Rollback.** Disable W-PRC / W-ACT / W-CON's required-check status; W-AG falls back to the Stage 3 short-circuit path. Frames/K-lines/analogies remain in memory but are not consulted.
 - **Trace.** `ANALYSIS.md §28 Stage 4`, §3, §5, §15, §16.
@@ -220,10 +230,10 @@ The stages are sequential: each stage presupposes its predecessor. **A stage doe
 - **Deliverables.**
   - **S5-D1.** Populate `state/self-models/` with at least two non-identical self-models per agency (`fast`, plural by rule), and `state/self-ideals/` with the verbatim set from `ANALYSIS.md §12.3` (slow, CODEOWNER-restricted).
   - **S5-D2.** Create `agencies/b-brains/{activation,memory,channel,bridge,economic,governance-drift,self-model}-steward/`. Each carries `constitution.yaml` with `may_merge: false` and `read_content: false`.
-  - **S5-D3.** Implement a `censor/b-brain-content-access` required check on PRs from b-brain agencies: fails any handler that opens a file matching a content directory glob (e.g. `memory/episodic/**` body content, agency `outputs/**` body content). The check inspects the PR's added/changed file *paths*, not their content, exactly to honour the metadata-only constraint.
+  - **S5-D3.** Implement C-BCA (`censor/b-brain-content-access`, listed in §B.4) on PRs from b-brain agencies: fails any handler that opens a file matching a content directory glob (e.g. `memory/episodic/**` body content, agency `outputs/**` body content). The check inspects the PR's added/changed file *paths*, not their content, exactly to honour the metadata-only constraint.
   - **S5-D4.** Implement W-OBS to emit the observability signals listed in `ANALYSIS.md §19` under `state/observability/`.
   - **S5-D5.** Generate the first quarterly ecology report at `state/ecology-reports/<yyyy>-Q<n>.md`, conforming to `ecology-report.schema.yaml`, produced by a scheduled W-OBS run and merged through a settlement PR that requires `governance/` CODEOWNER review.
-- **Required checks newly enabled.** `censor/b-brain-content-access` (plan-only scaffold extending §B.4; required by `§18`).
+- **Required checks newly enabled.** C-BCA.
 - **Exit criteria.** First ecology report is on `main`; an attempt by a b-brain handler to read a content file is rejected; b-brain PRs require human review.
 - **Rollback.** Disable W-OBS schedule; b-brain agencies remain present but dormant. Self-models and self-ideals remain on disk.
 - **Trace.** `ANALYSIS.md §28 Stage 5`, §3, §12, §18, §19.
