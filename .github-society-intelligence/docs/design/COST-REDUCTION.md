@@ -42,6 +42,10 @@ The cost surface has four multiplicative axes; every pattern in §C attacks one 
 
 Reducing *minutes* is a separate concern (runner sizing, caching, build-step trimming). This document is exclusively about reducing *launches* — the count `PLAN.md` is most likely to make explode.
 
+### A.1 The 8-hour per-run budget as a cost lever
+
+A single GitHub Actions workflow run can execute for **up to 8 hours**. That envelope is large compared to the work any one censor or cognitive-loop step performs, and §C exploits it deliberately: when a run can sit idle waiting for a window to close (the consolidation window of `PLAN.md §C Stage 4, S4-D3`), or coalesce several settlement steps that would otherwise each trigger a fresh workflow, *one* long-lived run replaces *many* short-lived ones. The 8-hour cap is the upper bound on this consolidation; patterns that would exceed it (e.g. a full 24-hour consolidation window held inside a single run) must split across runs or schedule a tail-completion run that resumes from state on disk. Pattern P13 in §C is the explicit application of this lever; several other patterns rely implicitly on the budget being this large.
+
 ---
 
 ## §B. Operating principles for cost reduction
@@ -142,7 +146,7 @@ Each pattern is identified (P-n), states what it does, names the cost axis it at
 ### P10 — Reusable workflow (`workflow_call`) for shared checkout-and-setup; composite actions for shared steps.
 
 - **What.** Factor the common preamble of every censor job (`actions/checkout`, language setup, schema-tool install) into a composite action under `.github/actions/setup-society/`. Factor the common workflow envelope (concurrency, permissions, `paths`, `if:` filters) into a single reusable workflow `.github/workflows/_call-censor.yml` invoked by `censors.yml` jobs via `workflow_call`. Each call still counts as a job, but cache reuse and step deduplication shrink per-job overhead enough that one consolidated workflow stays under the per-workflow time cap.
-- **Cost axes.** Reduces per-job *minutes*, not launches; included here because it makes P1's consolidation *feasible* at scale (without it, `censors.yml` risks hitting the 6-hour workflow limit at high stages).
+- **Cost axes.** Reduces per-job *minutes*, not launches; included here because it makes P1's consolidation *feasible* at scale (without it, `censors.yml` risks approaching the 8-hour per-run cap at high stages when many jobs share a single workflow).
 - **Applies to.** All `C-*` jobs from `PLAN.md §B.4`.
 - **Constraint.** `workflow_call` itself counts as a workflow run; for very small censors, an inline composite action is cheaper. Choose per-check.
 - **Rollback.** Inline the composite back into each job.
@@ -163,6 +167,16 @@ Each pattern is identified (P-n), states what it does, names the cost axis it at
 - **Constraint.** A doc PR that *also* touches code is not documentation-only and runs the full surface. The detection is conservative: any non-doc path included → full surface.
 - **Rollback.** Remove the skip filter; documentation PRs run the full cognitive loop.
 
+### P13 — Hold the cognitive loop and the consolidation window inside one long-lived run, up to the 8-hour cap.
+
+- **What.** `PLAN.md §C Stage 4, S4-D3` requires every memory-promoting PR to "sit in `memory/consolidation-queue/` for the configured window before W-STL closes it." Naïvely, that window is implemented by a scheduled re-trigger: one run opens the window, a later scheduled run closes it — two launches per settlement at minimum, plus any intervening checks. Instead, configure short-window settlements (≤ 8 hours of consolidation) to **hold inside the same `cognition.yml` run from P2** using an in-run wait step that polls `memory/consolidation-queue/<id>.yaml`'s `closes_at` timestamp and proceeds when the window expires. The same long-lived run executes W-CON and W-STL as later jobs via `needs:`. One workflow run replaces the open + tail-completion pair.
+- **Cost axes.** (3) event multiplier (no scheduled tail-completion); (2) trigger fan-out (no second `schedule:` or `workflow_dispatch:` wake).
+- **Applies to.** `PLAN.md §C Stage 4, S4-D3` (consolidation window); `PLAN.md §B.3` W-CON; settlement PRs whose `consolidation_window_seconds` ≤ 28 800 (8 hours) minus a safety margin for the W-STL closure jobs (suggested cap: 7 hours of wait so the closure has ≥ 1 hour of headroom).
+- **Why this is safe.** The wait is observable: the run's logs and the `state/observability/` artifact emitted at wait-start make the window auditable in real time, which a scheduled re-trigger does not. The consolidation discipline of `ANALYSIS.md §3, §15` is preserved exactly — only the *implementation* of "wait then promote" changes from "two runs" to "one run with a wait step".
+- **Constraint.** Settlements whose configured window exceeds the 8-hour budget (governance may set longer windows for high-sensitivity memory classes) must split across runs: the long-lived run records its progress under `workspace/active-settlements/<id>/wait-checkpoint.yaml` and a single scheduled tail-completion run resumes from that checkpoint. This is still strictly cheaper than the naïve per-event-tick polling pattern. The 8-hour cap is also the hard upper bound on `cognition.yml` total wall time; P10's composite-action factoring exists in part to keep the non-wait portion of the run under one hour so a 7-hour wait fits.
+- **Cost-only scaffold.** `wait-checkpoint.yaml` is not named in `PLAN.md`; it is the minimal artifact that lets the long-run / split-run choice be made per settlement without changing the censor surface.
+- **Rollback.** Replace the in-run wait with a scheduled tail-completion workflow that reads `consolidation-queue/<id>.yaml`. The settlement schema and censors do not change; only the workflow layout reverts.
+
 ---
 
 ## §D. Stage-by-stage application
@@ -175,12 +189,12 @@ For each `PLAN.md §C` stage, this table records: the patterns from §C that app
 | 1 (skeleton) | 3 | P4, P8, P12 | 2–3 | Layout-lint is added as a job inside W-AG, not a new workflow. |
 | 2 (censors) | 9 | P1, P3, P4, P5, P8, P10, P12 | 2–4 | All seven new censors land as jobs in `censors.yml`; P5 removes the dual-PR rehearsal. |
 | 3 (second agency) | 13 | P1, P3, P4, P5, P7, P8, P10, P12 | 3–5 | W-DLG is one workflow with one job per hop; C-EGR/C-INR/C-DEP/C-CA are jobs in `censors.yml`. |
-| 4 (cognitive loop) | 19 | P1, P2, P3, P4, P5, P7, P8, P9, P10, P11, P12 | 3–5 | P2 collapses the six cognitive-loop workflows into one; P9 moves C-CW to `merge_group`. |
-| 5 (B-brains) | 20 | adds P6 | 3–5 (PR) + 1 (scheduled) | B-brains do not contribute to PR runs; one daily scheduled run covers all stewards. |
-| 6 (bridges) | 22 | adds nothing new | 3–6 | C-BRP and the layout-lint sub-check are jobs in `censors.yml`. |
-| 7 (ledger) | 25 | adds nothing new | 4–6 | Ledger merges to `main` are exempted from P4's cancel-in-progress (see P4 constraint). |
-| 8 (differentiation) | 25 | adds nothing new | 4–6 | Trial-window variants share `cognition.yml`; differentiation does not create new workflows. |
-| 9 (Level 5) | 25 | adds nothing new | 4–6 | The dry-run promotion PR (S9-D3) is itself a single-PR settlement that closes without merge. |
+| 4 (cognitive loop) | 19 | P1, P2, P3, P4, P5, P7, P8, P9, P10, P11, P12, P13 | 2–4 | P2 collapses the six cognitive-loop workflows into one; P9 moves C-CW to `merge_group`; P13 absorbs the consolidation window into the same long-lived `cognition.yml` run for windows ≤ 7 h. |
+| 5 (B-brains) | 20 | adds P6 | 2–4 (PR) + 1 (scheduled) | B-brains do not contribute to PR runs; one daily scheduled run covers all stewards. |
+| 6 (bridges) | 22 | adds nothing new | 2–5 | C-BRP and the layout-lint sub-check are jobs in `censors.yml`. |
+| 7 (ledger) | 25 | adds nothing new | 3–5 | Ledger merges to `main` are exempted from P4's cancel-in-progress (see P4 constraint). |
+| 8 (differentiation) | 25 | adds nothing new | 3–5 | Trial-window variants share `cognition.yml`; differentiation does not create new workflows. |
+| 9 (Level 5) | 25 | adds nothing new | 3–5 | The dry-run promotion PR (S9-D3) is itself a single-PR settlement that closes without merge. |
 
 The "Target runs/PR" column is the property this document undertakes to hold. The activation-steward B-brain's first scheduled report after each stage's exit criteria are met must include the *actual* runs/PR over the prior window; sustained drift above the target column entries triggers a cost-reduction settlement (a new PR applying additional §C patterns or extending existing ones).
 
@@ -201,6 +215,8 @@ These patterns *would* reduce runs but violate `PLAN.md` or `ANALYSIS.md`. They 
 | Letting B-brains write to `main` directly to avoid PR-time runs | Violates `PLAN.md §A item 9` outright. |
 | Self-hosted runners to reduce billed minutes per launch | Out of scope (reduces minutes, not launches) and introduces a non-`free` economic mode dependency — refused under §B item 8 until `PLAN.md §C Stage 9` re-opens the maturity envelope. |
 | Cancelling W-STL ledger-writing runs via P4 | See P4 constraint; ledger half-writes corrupt `memory/ledger/**` append-only invariants and would be caught by C-AO at the next PR — but the corruption is irreversible in the run itself. |
+| Holding consolidation windows that exceed 8 hours inside one run via P13 | The 8-hour per-run cap is a hard limit; runs that approach it are killed and lose their wait state. Long windows must split across runs using the `wait-checkpoint.yaml` mechanism from P13's constraint. |
+| Padding the cognition loop with unnecessary `sleep` to amortise launches | The 8-hour budget is a *consolidation* lever, not a *batching* lever; settlements that have no semantic reason to wait must close promptly so the runner is freed. Holding a runner idle to suppress launches is wasteful by `ANALYSIS.md §17`'s standard. |
 
 ### E.2 Top cost risks the patterns do not fully mitigate
 
@@ -230,10 +246,11 @@ This document does **not** cover:
 
 These questions are not answered by `PLAN.md` and must be resolved by an explicit governance settlement before any §C pattern lands:
 
-1. What is the per-PR launch budget the activation-steward must report against? (§D suggests ≤ 6; governance picks the exact number.)
+1. What is the per-PR launch budget the activation-steward must report against? (§D suggests ≤ 5; governance picks the exact number.)
 2. What is the cadence for the scheduled B-brain run under P6 — hourly during pilot, daily in steady state, or a different schedule per steward?
 3. Which checks from `PLAN.md §B.4` are eligible for `merge_group`-only execution under P9? (§C P9 nominates C-CW, C-PAY, C-DEP; governance confirms or amends.)
 4. What is the documentation-only path glob for P12, and does it include `.github-society-intelligence/docs/**`?
+5. What is the upper bound on `consolidation_window_seconds` that P13 will hold inside a single run (suggested 25 200 s = 7 h to leave headroom under the 8-hour cap), and at what threshold does governance require the split-run tail-completion fallback?
 
 Each of these is a one-PR settlement in `governance/`, opened before the §C pattern that depends on it.
 
