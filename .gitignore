@@ -1,14 +1,14 @@
 node_modules/
-.github-minimum-intelligence/node_modules/
+.github-society-intelligence/node_modules/
 .github-agenticana-intelligence/node_modules/
 .DS_Store
 
 # Local-only chat threads created by lifecycle/local-chat.ts
-.github-minimum-intelligence/state/threads/
+.github-society-intelligence/state/threads/
 
 # Per-thread scratch / debug artefacts written by local-chat.ts
-.github-minimum-intelligence/state/local-last-run.jsonl
-.github-minimum-intelligence/memory.log
+.github-society-intelligence/state/local-last-run.jsonl
+.github-society-intelligence/memory.log
 
 # Leaked tool scratch files that pi-mono / some local tool implementations
 # occasionally drop into the repo root. They are never intentional commits.
