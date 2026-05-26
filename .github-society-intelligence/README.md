@@ -16,7 +16,7 @@ A repository-local AI framework that plugs into a developer’s existing workflo
   </picture>
 </p>
 
-## An AI agent that lives in your GitHub Repo
+## A society of AI agents that live in your GitHub Repo
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) ![AI](https://img.shields.io/badge/Assisted-Development-2b2bff?logo=openai&logoColor=white) [![github-society-intelligence-agent](https://github.com/japer-technology/github-society-intelligence/actions/workflows/github-society-intelligence-agent.yml/badge.svg)](https://github.com/japer-technology/github-society-intelligence/actions/workflows/github-society-intelligence-agent.yml)
 
