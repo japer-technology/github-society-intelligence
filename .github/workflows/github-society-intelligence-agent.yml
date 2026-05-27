@@ -110,12 +110,81 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Classify society event
-        id: classify
+      # Bootstrap discipline: on a fresh repository the framework directory
+      # (and therefore the composite dispatcher action) does not yet exist.
+      # The setup job must never fail in that state, otherwise the install
+      # job - which is `needs: setup` per the mode-gating censor - becomes
+      # unreachable and the install/upgrade flow can no longer self-bootstrap.
+      # We probe for the dispatcher action's presence and pick the matching
+      # classifier. The install/upgrade job remains the only mechanism that
+      # materializes `.github-society-intelligence`; this step never writes
+      # to the repository, so install and setup cannot interfere with each
+      # other in either direction.
+      - name: Detect installed dispatcher
+        id: dispatcher-presence
+        shell: bash
+        run: |
+          if [ -f ".github-society-intelligence/lifecycle/society/setup-society/action.yml" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::.github-society-intelligence not installed; only act/install can run until install/upgrade completes."
+          fi
+
+      - name: Classify society event (installed)
+        id: classify-installed
+        if: steps.dispatcher-presence.outputs.available == 'true'
         uses: ./.github-society-intelligence/lifecycle/society/setup-society
         with:
           intent: ${{ github.event.inputs.intent || '' }}
           settlement_id: ${{ github.event.inputs.settlement_id || '' }}
+
+      - name: Classify society event (bootstrap)
+        id: classify-bootstrap
+        if: steps.dispatcher-presence.outputs.available != 'true'
+        shell: bash
+        env:
+          INTENT: ${{ github.event.inputs.intent || '' }}
+        run: |
+          set -euo pipefail
+          # Bootstrap classifier: when the framework is not yet installed the
+          # only legal route is the manual install/upgrade act job. Every other
+          # mode stays inert (empty mode) so its `needs.setup.outputs.mode`
+          # gate fails closed. This guarantees install is the only "setup"
+          # mechanism on a fresh repository.
+          MODE=""
+          EVENT_CLASS="bootstrap-skip"
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ] \
+              && { [ -z "$INTENT" ] || [ "$INTENT" = "install" ]; }; then
+            MODE="act"
+            EVENT_CLASS="manual-install"
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "event_class=$EVENT_CLASS" >> "$GITHUB_OUTPUT"
+          echo "settlement_id=" >> "$GITHUB_OUTPUT"
+
+      - name: Classify society event
+        id: classify
+        shell: bash
+        env:
+          AVAILABLE: ${{ steps.dispatcher-presence.outputs.available }}
+          INSTALLED_MODE: ${{ steps.classify-installed.outputs.mode }}
+          INSTALLED_EVENT_CLASS: ${{ steps.classify-installed.outputs.event_class }}
+          INSTALLED_SETTLEMENT_ID: ${{ steps.classify-installed.outputs.settlement_id }}
+          BOOTSTRAP_MODE: ${{ steps.classify-bootstrap.outputs.mode }}
+          BOOTSTRAP_EVENT_CLASS: ${{ steps.classify-bootstrap.outputs.event_class }}
+          BOOTSTRAP_SETTLEMENT_ID: ${{ steps.classify-bootstrap.outputs.settlement_id }}
+        run: |
+          set -euo pipefail
+          if [ "$AVAILABLE" = "true" ]; then
+            echo "mode=$INSTALLED_MODE" >> "$GITHUB_OUTPUT"
+            echo "event_class=$INSTALLED_EVENT_CLASS" >> "$GITHUB_OUTPUT"
+            echo "settlement_id=$INSTALLED_SETTLEMENT_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=$BOOTSTRAP_MODE" >> "$GITHUB_OUTPUT"
+            echo "event_class=$BOOTSTRAP_EVENT_CLASS" >> "$GITHUB_OUTPUT"
+            echo "settlement_id=$BOOTSTRAP_SETTLEMENT_ID" >> "$GITHUB_OUTPUT"
+          fi
 
   # act/install preserves the original template installer. It remains manual-only
   # and is disabled in the template repository to avoid self-install recursion.
