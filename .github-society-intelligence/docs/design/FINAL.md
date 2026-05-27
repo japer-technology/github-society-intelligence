@@ -1,60 +1,124 @@
 # FINAL.md - Final Single-Workflow Society Design
 
-## Summary
+## Purpose
 
-This is the final implementation design for evolving GitHub Society Intelligence from today's issue-response agent into the repository-native society described by `DESIGN.md`, under the hard constraint from `PLAN-SINGLE.md`: only the existing PLAN-derived workflow is expanded.
+This document is the binding design contract for implementing `DESIGN.md` through the hard single-workflow constraint of `PLAN-SINGLE.md`.
 
-The workflow file remains `.github/workflows/github-society-intelligence-agent.yml`. No `agent.yml` rename, no `think.yml`, no `act.yml`, no `censor.yml`, no reusable workflow file, and no second PLAN-derived workflow may be introduced. The separate `gsi-public-fabric.yml` remains out of scope.
+GitHub Society Intelligence starts as an issue-response agent. This design evolves it into a repository-native society without introducing a second PLAN-derived workflow file. The existing file, `.github/workflows/github-society-intelligence-agent.yml`, remains the permanent execution body. The separate `.github/workflows/gsi-public-fabric.yml` remains a public Pages publisher and is out of scope.
 
-The repository becomes the seed society first. Federation behavior is represented inside `.github-society-intelligence/` before any external federation hop: repositories in `DESIGN.md` collapse to governed directories, channels collapse to inter-agency settlement records, bridges collapse to bridge agencies, and ledger behavior stays disabled until maturity gates permit it.
+The result is a seed society inside one repository. Federation concepts from `DESIGN.md` are represented locally first: repositories become governed directories, cross-repo channels become inter-agency settlement records, bridges become bridge agencies, and the ledger remains non-currency until maturity gates allow more.
 
-## Core Design
+## Non-Negotiable Invariants
 
-- Treat the current workflow as the permanent execution body of the society. Its existing install and issue-response behavior is preserved, then refactored into mode-gated jobs inside the same file.
-- Add one root `setup` dispatcher job. It runs on every trigger and outputs `mode`, `event_class`, and `settlement_id`.
-- Every other job declares `needs: setup` and gates on `needs.setup.outputs.mode`.
-- Use five modes: `think`, `act`, `observe`, `delegate`, and `settle`.
-- Use job names and check names, not workflow filenames, to preserve the cognitive distinction between deliberation and action.
-- Put reusable implementation in `.github/actions/` composite actions and `.github-society-intelligence/lifecycle/` TypeScript/Bun modules. Composite actions are allowed because they are not workflows.
+- The only PLAN-derived workflow file is `.github/workflows/github-society-intelligence-agent.yml`.
+- Do not add `agent.yml`, `think.yml`, `act.yml`, `censor.yml`, `observe.yml`, `delegate.yml`, `settle.yml`, reusable workflow files, or any other PLAN-derived workflow.
+- Every non-`setup` job in the workflow declares `needs: setup` and gates on `needs.setup.outputs.mode`.
+- The `setup` job is the only dispatcher. Individual jobs must not reimplement independent mode decisions.
+- Required censors are represented as stable check names, not as separate workflow files.
+- `observe` never runs from PR events.
+- `settle` is never cancellable and is the only mode reserved for durable promotion to `main`.
+- Economic behavior starts disabled. `currency` mode is forbidden until governance explicitly enables it after maturity review.
 
-## Workflow Shape
+## Dispatcher Contract
 
-`github-society-intelligence-agent.yml` owns all society behavior:
+`setup` classifies every trigger into three outputs:
 
-- `act-install`: current manual installer/upgrader.
-- `act-conversational-bee-respond`: current issue/comment agent, changed over time to open settlement PRs instead of directly committing durable cognitive artifacts.
-- `think-censor-*`: required PR checks such as credential, PII, representation class, append-only, cross-directory write, authority, dispatcher integrity, mode gating, and job naming.
-- `think-cognition-*`: perception, recognition, frame selection, K-line activation, critique, censor aggregation, and consolidation wait.
-- `delegate-hop-*`: inter-agency channel dispatch inside the repo, carrying settlement ID, contract SHA, payload hash, and depth.
-- `observe-b-brain-*`: scheduled metadata-only B-brains.
-- `settle-*`: settlement closure, memory promotion, credit assignment, ledger append, dispute windows, and reputation updates.
+| Output | Meaning |
+| --- | --- |
+| `mode` | One of `think`, `act`, `observe`, `delegate`, or `settle`. |
+| `event_class` | A fine-grained reason such as `issue-opened`, `comment-issue`, `pr`, `cron-daily`, `dispatch-delegate`, or `dispatch-settle`. |
+| `settlement_id` | The active `stl-YYYY-MM-DD-NNN` ID, read from dispatch input or a thought branch name when present. |
 
-`settle` jobs are never `cancel-in-progress`. `think` jobs may cancel stale runs. `observe` never runs from PR events. `act` may write branches and open PRs, but only `settle` may promote durable society state to `main`.
+Mode routing:
+
+| Trigger | Mode | Notes |
+| --- | --- | --- |
+| `issues.opened` | `act` | Conversational entrypoint. |
+| `issue_comment.created` | `act` | Ignores PR comments and bot comments by event class. |
+| `workflow_dispatch: install` or empty intent | `act` | Preserves installer/upgrader behavior. |
+| `workflow_dispatch: import-memory` | `act` | Reserved import PR opening surface. |
+| `pull_request` / `merge_group` | `think` | Runs censors and cognition scaffolds. |
+| `schedule` / `workflow_dispatch: observe` | `observe` | Metadata-only B-brain surface. |
+| `workflow_dispatch: delegate` | `delegate` | Governed inter-agency channel hop surface. |
+| `push` to `main` / `workflow_dispatch: settle` | `settle` | Settlement-side effects and closure surface. |
+
+The canonical dispatcher implementation for the workflow is `.github/actions/setup-society/action.yml`. The TypeScript implementation at `.github-society-intelligence/lifecycle/society/dispatcher.ts` mirrors it for local regression tests.
+
+## Workflow Architecture
+
+`github-society-intelligence-agent.yml` contains one job graph with five mode-prefixed pools:
+
+| Pool | Job prefix | Responsibility |
+| --- | --- | --- |
+| `act` | `act-*` | Install/upgrade, respond to issues, and open future settlement/import PRs. |
+| `think` | `think-*` | PR evaluation, required censors, and cognitive-loop scaffolds. |
+| `observe` | `observe-*` | Scheduled or manual metadata observation by B-brains. |
+| `delegate` | `delegate-*` | Inter-agency channel hop scaffolding with depth checks. |
+| `settle` | `settle-*` | Settlement closure scaffolding, memory promotion, ledger checks, and credit assignment. |
+
+Current concrete jobs:
+
+- `act-install` preserves the template installer/upgrader.
+- `act-conversational-bee-respond` preserves the current issue/comment agent.
+- `think-censor-*` establishes the first required-check names.
+- `think-cognition-*` establishes the cognitive-loop order.
+- `observe-b-brain-*` establishes scheduled metadata-only B-brain slots.
+- `delegate-hop-1` establishes the first governed delegation surface.
+- `settle-close` establishes the non-cancellable settlement closure surface.
+
+Later stages fill in behavior inside these surfaces instead of adding workflows.
 
 ## Repository Model
 
-Implement the federation design inside the existing `.github-society-intelligence/` root before any external federation hop:
+The society root is `.github-society-intelligence/`.
 
-- `governance/`: constitution, authority registry, approval gates, rights registry, maturity flags, self-ideals.
-- `agencies/`: `conversational-bee`, `critic-bee`, later B-brains, bridges, bootstrap forks, and archived agencies.
-- `censors/`: durable definitions and fixtures for each required censor.
-- `memory/`: events, episodic, semantic, procedural, failure, frames, analogies, concepts, K-lines, decisions, credit assignment, consolidation queue, and ledger.
-- `services/`: local service registry and versioned contracts.
-- `workspace/`: active settlements and current focus.
-- `settlements/`: closed settlement records.
-- `state/`: sessions, issue mappings, observability, ecology reports, windows, self-models, and self-ideals.
+| Directory | Role |
+| --- | --- |
+| `governance/` | Constitution, authority registry, rights registry, maturity gates, approval gates, and self-ideals. |
+| `agencies/` | `conversational-bee`, `critic-bee`, B-brains, bridge agencies, bootstrap variants, and archived agencies. |
+| `censors/` | Durable censor registry and future policy fixtures. |
+| `memory/` | Events, episodic, semantic, procedural, failure, frames, analogies, concepts, K-lines, decisions, credit assignment, consolidation queue, and ledger. |
+| `services/` | Local service registry and versioned contracts. |
+| `imports/` | Provenance records for memory imports before consolidation. |
+| `workspace/` | Active settlements and focus records. |
+| `settlements/` | Closed settlement records. |
+| `state/` | Existing issue/session state plus observability, ecology reports, windows, self-models, and self-ideals. |
 
-Existing `.pi/`, `AGENTS.md`, install defaults, issue/session state, local chat, and public fabric assets remain compatible.
+Existing `.pi/`, `AGENTS.md`, install defaults, issue/session state, local chat, and public-fabric assets remain compatible.
 
 ## Required Interfaces
 
 - Settlement IDs: `stl-YYYY-MM-DD-NNN`.
 - Thought branches: `think/<settlement-id>/<agency>/<slug>`.
 - Settlement PR label: `settlement: stl-...`.
-- Workflow dispatch intent values: `install`, `observe`, `delegate`, `settle`, and later `import-memory`.
-- Channel records include `channel_id`, pinned `contract_release`, `service_id`, input/output classes, censor requirements, budget, bridge requirement, and dispute window.
-- Ledger entries are append-only. Corrections are reversing entries, never edits.
-- Economic mode starts disabled. Only `free` and `reciprocal` are permitted until maturity gates explicitly enable more.
+- Workflow dispatch intents: `install`, `observe`, `delegate`, `settle`, and `import-memory`.
+- Delegation metadata: `settlement_id`, `channel_id`, `contract_sha`, `payload_hash`, and `delegation_depth`.
+- Channel records: `channel_id`, pinned `contract_release`, `service_id`, input/output classes, censor requirements, budget, bridge requirement, and dispute window.
+- Ledger entries: append-only. Corrections are reversing entries, never edits.
+- Economy: `free` and `reciprocal` are allowed; `currency` is disabled until maturity gates change.
+
+## Required Checks
+
+Stage 1 establishes the single-workflow scaffold checks:
+
+- `censor/dispatcher-integrity`
+- `censor/mode-gating`
+- `censor/job-naming`
+
+Stage 2 and later expand the required check catalogue:
+
+- `censor/credential`
+- `censor/pii`
+- `censor/representation-class`
+- `censor/append-only`
+- `censor/cross-directory-write`
+- `censor/authority`
+- `censor/consolidation-window`
+- `censor/b-brain-content-access`
+- `censor/delegation-depth`
+- `censor/credit-assignment`
+
+Additional future checks from `PLAN-SINGLE.md` land only when their stages are implemented: cloud egress, input rights, bridge probation, payment, reputation floor, silent retry, memory import, and settlement closure.
 
 ## Stage Order
 
@@ -69,19 +133,62 @@ Existing `.pi/`, `AGENTS.md`, install defaults, issue/session state, local chat,
 9. Exercise differentiation by fork.
 10. Declare Level 5 only after the maturity contract is satisfied.
 
-## Test Plan
+## Documentation Contract
 
-- Add dispatcher fixture tests for every trigger and dispatch intent.
-- Add workflow static tests proving there is only one PLAN-derived workflow, every job depends on `setup`, every job is mode-gated, and no reusable workflow is referenced.
-- Add schema tests for governance, agency, settlement, channel, memory, credit-assignment, bridge, ledger, and observability artifacts.
-- Add censor positive/negative fixture tests.
-- Run `bun test lifecycle/`.
-- Run `actionlint` for workflow validation when available.
-- Add mocked GitHub integration tests for install, issue response, settlement PR creation, PR censoring, delegation, observe schedule, settlement closure, and ledger append.
+Documentation and implementation must move together:
 
-## Assumptions
+- Any job graph change updates this file and `FINAL-PLAN.md`.
+- Any dispatcher route change updates `.github/actions/setup-society/action.yml`, `.github-society-intelligence/lifecycle/society/dispatcher.ts`, and dispatcher tests.
+- Any new required check updates `censors/registry.yaml`, Branch Protection documentation, and workflow validation tests.
+- Any new durable artifact type adds a schema or fixture before the artifact is used by a settlement.
 
-- The final document lives at `.github-society-intelligence/docs/design/FINAL.md`.
-- The existing single agent workflow filename is retained.
-- `gsi-public-fabric.yml` is not part of the PLAN-derived workflow cap.
-- GitHub Branch Protection setup is documented and validated, but may require repository-admin configuration outside code.
+## Verification
+
+Required local checks:
+
+```sh
+bun test lifecycle/
+bun run validate:workflow
+```
+
+Fallback checks when Bun is unavailable:
+
+```sh
+node .github-society-intelligence/lifecycle/validate-workflow.ts
+ruby -e 'require "yaml"; YAML.load_file(".github/workflows/github-society-intelligence-agent.yml")'
+```
+
+Recommended CI/static checks:
+
+```sh
+actionlint .github/workflows/github-society-intelligence-agent.yml
+```
+
+Acceptance criteria:
+
+- Exactly one PLAN-derived workflow remains.
+- The workflow parses.
+- `validate-workflow.ts` passes.
+- Every non-`setup` job is setup-gated.
+- The dispatcher maps PR branches containing `stl-YYYY-MM-DD-NNN` to `think` mode and extracts the settlement ID.
+- `gsi-public-fabric.yml` remains untouched and out of scope.
+
+## Current Implementation Status
+
+Implemented now:
+
+- `FINAL.md`.
+- The stage-one society directory skeleton.
+- `setup` dispatcher via `.github/actions/setup-society/action.yml`.
+- Mode-gated expansion of the existing workflow.
+- Workflow static validation script.
+- Dispatcher regression tests.
+
+Reserved for later stages:
+
+- Settlement PR creation by `conversational-bee`.
+- Full schema validation for durable artifacts.
+- Real censor policy engines beyond first-pass scaffolds.
+- Cognitive loop implementation.
+- B-brain ecology report generation.
+- Bridge, ledger, dispute, and reputation behavior.
