@@ -1,0 +1,9 @@
+agency_id: self-model-steward
+role: observe_self_model_metadata
+read_content: false
+may:
+  - inspect_self_model_metadata
+  - propose_self_model_review
+may_not:
+  - import_external_self_models
+  - merge_changes

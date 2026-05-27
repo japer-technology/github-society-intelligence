@@ -1,0 +1,9 @@
+agency_id: memory-steward
+role: observe_memory_patterns
+read_content: false
+may:
+  - inspect_memory_metadata
+  - propose_memory_hygiene_settlements
+may_not:
+  - read_private_payload_content
+  - merge_changes

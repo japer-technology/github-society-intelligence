@@ -1,0 +1,9 @@
+agency_id: economic-steward
+role: observe_ledger_and_reputation_patterns
+read_content: false
+may:
+  - inspect_ledger_metadata
+  - report_dispute_and_reputation_trends
+may_not:
+  - write_ledger_entries
+  - merge_changes

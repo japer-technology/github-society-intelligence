@@ -1,0 +1,10 @@
+agency_id: conversational-bee
+role: issue_conversation_entrypoint
+may:
+  - respond_to_authorized_issues
+  - propose_settlement_branches
+  - write_conversation_session_state
+may_not:
+  - bypass_required_censors
+  - promote_durable_memory_without_settlement
+channels: []

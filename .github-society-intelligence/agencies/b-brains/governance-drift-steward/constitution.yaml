@@ -1,0 +1,9 @@
+agency_id: governance-drift-steward
+role: observe_governance_change_rate
+read_content: false
+may:
+  - inspect_governance_metadata
+  - report_slow_tier_drift
+may_not:
+  - amend_governance
+  - merge_changes

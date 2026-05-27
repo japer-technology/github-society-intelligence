@@ -1,0 +1,9 @@
+agency_id: bridge-steward
+role: observe_bridge_drift_patterns
+read_content: false
+may:
+  - inspect_bridge_metadata
+  - report_probation_candidates
+may_not:
+  - translate_payloads
+  - merge_changes

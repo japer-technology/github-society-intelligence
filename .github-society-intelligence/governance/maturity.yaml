@@ -1,0 +1,9 @@
+maturity_level: 3
+level_4_reflective_ready: false
+level_5_networked_ready: false
+economic_layer_enabled: false
+economy:
+  permitted_modes:
+    - free
+    - reciprocal
+  currency_enabled: false

@@ -1,0 +1,87 @@
+name: Setup Society
+description: Classify a GitHub event into the single-workflow society mode.
+inputs:
+  intent:
+    description: Workflow dispatch intent.
+    required: false
+    default: ""
+  settlement_id:
+    description: Explicit settlement ID for dispatch-driven runs.
+    required: false
+    default: ""
+outputs:
+  mode:
+    description: Society mode: think, act, observe, delegate, or settle.
+    value: ${{ steps.dispatch.outputs.mode }}
+  event_class:
+    description: Fine-grained event class for mode-gated jobs.
+    value: ${{ steps.dispatch.outputs.event_class }}
+  settlement_id:
+    description: Active settlement ID when available.
+    value: ${{ steps.dispatch.outputs.settlement_id }}
+runs:
+  using: composite
+  steps:
+    - id: dispatch
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        EVENT_NAME="${GITHUB_EVENT_NAME:-}"
+        INTENT="${{ inputs.intent }}"
+        SETTLEMENT_INPUT="${{ inputs.settlement_id }}"
+        REF_NAME="${GITHUB_REF_NAME:-}"
+        HEAD_REF="${GITHUB_HEAD_REF:-}"
+        ACTOR="${GITHUB_ACTOR:-}"
+
+        MODE="act"
+        EVENT_CLASS="unknown"
+        SETTLEMENT_ID="$SETTLEMENT_INPUT"
+
+        if [ -z "$SETTLEMENT_ID" ]; then
+          SOURCE_REF="${HEAD_REF:-$REF_NAME}"
+          if [[ "$SOURCE_REF" =~ (stl-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{3}) ]]; then
+            SETTLEMENT_ID="${BASH_REMATCH[1]}"
+          fi
+        fi
+
+        case "$EVENT_NAME:$INTENT" in
+          workflow_dispatch:|workflow_dispatch:install)
+            MODE="act"; EVENT_CLASS="manual-install" ;;
+          workflow_dispatch:observe)
+            MODE="observe"; EVENT_CLASS="dispatch-observe" ;;
+          workflow_dispatch:delegate)
+            MODE="delegate"; EVENT_CLASS="dispatch-delegate" ;;
+          workflow_dispatch:settle)
+            MODE="settle"; EVENT_CLASS="dispatch-settle" ;;
+          workflow_dispatch:import-memory)
+            MODE="act"; EVENT_CLASS="dispatch-import-memory" ;;
+          issues:*)
+            MODE="act"; EVENT_CLASS="issue-opened" ;;
+          issue_comment:*)
+            if [[ "$ACTOR" == *"[bot]" ]]; then
+              MODE="act"; EVENT_CLASS="ignored-bot-comment"
+            elif jq -e '.issue.pull_request' "$GITHUB_EVENT_PATH" >/dev/null 2>&1; then
+              MODE="act"; EVENT_CLASS="ignored-pr-comment"
+            else
+              MODE="act"; EVENT_CLASS="comment-issue"
+            fi ;;
+          pull_request:*|pull_request_target:*)
+            MODE="think"; EVENT_CLASS="pr" ;;
+          merge_group:*)
+            MODE="think"; EVENT_CLASS="merge-group" ;;
+          schedule:*)
+            MODE="observe"; EVENT_CLASS="cron-daily" ;;
+          push:*)
+            if [ "$REF_NAME" = "main" ]; then
+              MODE="settle"; EVENT_CLASS="push-main"
+            else
+              MODE="act"; EVENT_CLASS="push-branch"
+            fi ;;
+          *)
+            MODE="act"; EVENT_CLASS="unknown" ;;
+        esac
+
+        echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+        echo "event_class=$EVENT_CLASS" >> "$GITHUB_OUTPUT"
+        echo "settlement_id=$SETTLEMENT_ID" >> "$GITHUB_OUTPUT"

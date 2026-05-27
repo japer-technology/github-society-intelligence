@@ -1,142 +1,175 @@
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  GitHub Society Intelligence — Agent Workflow (Version 2.0.1)                ║
-# ║                                                                              ║
-# ║  An AI agent that lives inside your GitHub repository. It uses Issues as     ║
-# ║  a conversational UI, Git for persistent memory, and Actions as its only     ║
-# ║  compute layer. No external servers or infrastructure required.              ║
-# ║                                                                              ║
-# ║  QUICK START — copy this file into your repo and you're 4 steps away:        ║
-# ║                                                                              ║
-# ║    1. Copy this file → .github/workflows/ in your repository.                ║
-# ║    2. Add an LLM API key as a repository secret                              ║
-# ║       (Settings → Secrets and variables → Actions).                          ║
-# ║       At minimum, add ONE of:                                                ║
-# ║         • OPENAI_API_KEY          (OpenAI — default provider)                ║
-# ║         • ANTHROPIC_API_KEY       (Anthropic Claude)                         ║
-# ║         • GEMINI_API_KEY          (Google Gemini)                            ║
-# ║         • XAI_API_KEY             (xAI Grok)                                 ║
-# ║         • OPENROUTER_API_KEY      (OpenRouter / DeepSeek)                    ║
-# ║         • MISTRAL_API_KEY         (Mistral)                                  ║
-# ║         • GROQ_API_KEY            (Groq)                                     ║
-# ║    3. Run the workflow manually:                                             ║
-# ║       Actions → github-society-intelligence-agent → Run workflow.            ║
-# ║       This installs the agent folder into your repo (or upgrades it).        ║
-# ║    4. Open an issue — the agent reads your message and replies!              ║
-# ║                                                                              ║
-# ║  HOW IT WORKS:                                                               ║
-# ║    • Every issue is a conversation thread. Comment again to continue.        ║
-# ║    • The agent commits every response to git — full history, full recall.    ║
-# ║    • Only repo collaborators with write access (or higher) can trigger       ║
-# ║      the agent. Unauthorized users are silently rejected.                    ║
-# ║                                                                              ║
-# ║  WHAT THIS WORKFLOW CONTAINS (two jobs):                                     ║
-# ║    run-install   — Self-installer and upgrader (workflow_dispatch only).     ║
-# ║    run-agent     — AI agent that responds to issues and comments.            ║
-# ║                                                                              ║
-# ║  Docs: https://github.com/japer-technology/github-society-intelligence       ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
 name: github-society-intelligence-agent
 
-# ──────────────────────────────────────────────────────────────────────────────
-# TRIGGERS
-# The workflow listens for three distinct GitHub events. Each event activates
-# a different job (see the `if:` guards on each job below).
-# ──────────────────────────────────────────────────────────────────────────────
 on:
-  # 1. A new issue is opened → the agent reads it and posts an AI response.
   issues:
     types: [opened]
-
-  # 2. A comment is added to an existing issue → the agent continues the
-  #    conversation, loading the full session history from git.
   issue_comment:
     types: [created]
-
-  # 3. Manual "Run workflow" button → installs the agent folder into your
-  #    repository, or upgrades it when a newer version is available.
-  #    Safe to re-run; it installs, upgrades, or skips as appropriate.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github-society-intelligence/**"
+      - ".github/workflows/github-society-intelligence-agent.yml"
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      intent:
+        description: Society intent for the single agent workflow.
+        required: false
+        default: install
+        type: choice
+        options:
+          - install
+          - observe
+          - delegate
+          - settle
+          - import-memory
+      settlement_id:
+        description: Optional settlement ID, e.g. stl-2026-05-26-001.
+        required: false
+        default: ""
+      channel_id:
+        description: Optional channel ID for delegate mode.
+        required: false
+        default: ""
+      contract_sha:
+        description: Optional pinned contract SHA for delegate mode.
+        required: false
+        default: ""
+      payload_hash:
+        description: Optional payload hash for delegate mode.
+        required: false
+        default: ""
+      delegation_depth:
+        description: Optional delegation depth for delegate mode.
+        required: false
+        default: "1"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PERMISSIONS
-# These are the minimum permissions the workflow needs. GitHub Actions uses
-# a least-privilege model; each permission listed here is required for a
-# specific reason documented below.
-# ──────────────────────────────────────────────────────────────────────────────
 permissions:
-  contents: write   # Commit agent responses, session state, and installed files to the repo.
-  issues: write     # Post AI replies as issue comments and add reaction indicators (🚀 / 👍).
-  actions: write    # Allow the run-install job to push commits that subsequently trigger workflows.
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+  checks: read
 
-# ══════════════════════════════════════════════════════════════════════════════
-# JOBS
-# ══════════════════════════════════════════════════════════════════════════════
 jobs:
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # JOB 1 — run-install
-  #
-  # Purpose : Self-installer and upgrader. Downloads the latest agent folder
-  #           from the template repository and commits it into YOUR repo.
-  #           If the agent is already installed at the latest version, it skips.
-  # Trigger : workflow_dispatch (manual "Run workflow" button only).
-  # Safe    : Re-running is always safe — it installs, upgrades, or skips.
-  # ────────────────────────────────────────────────────────────────────────────
-  run-install:
+  setup:
+    name: setup
     runs-on: ubuntu-latest
-    # Only run when triggered manually via the Actions UI.
-    # Skip when running inside the template repository itself — the run-install job
-    # downloads FROM that repo, so running it there would be self-referential.
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+      event_class: ${{ steps.classify.outputs.event_class }}
+      settlement_id: ${{ steps.classify.outputs.settlement_id }}
+    steps:
+      - name: Classify society event
+        id: classify
+        env:
+          DISPATCH_INTENT: ${{ github.event.inputs.intent || '' }}
+          DISPATCH_SETTLEMENT_ID: ${{ github.event.inputs.settlement_id || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          HEAD_REF: ${{ github.head_ref || '' }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          MODE="act"
+          EVENT_CLASS="unknown"
+          SETTLEMENT_ID="$DISPATCH_SETTLEMENT_ID"
+
+          if [ -z "$SETTLEMENT_ID" ]; then
+            SOURCE_REF="${HEAD_REF:-$REF_NAME}"
+            if [[ "$SOURCE_REF" =~ (stl-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{3}) ]]; then
+              SETTLEMENT_ID="${BASH_REMATCH[1]}"
+            fi
+          fi
+
+          case "$EVENT_NAME:$DISPATCH_INTENT" in
+            workflow_dispatch:|workflow_dispatch:install)
+              MODE="act"; EVENT_CLASS="manual-install" ;;
+            workflow_dispatch:observe)
+              MODE="observe"; EVENT_CLASS="dispatch-observe" ;;
+            workflow_dispatch:delegate)
+              MODE="delegate"; EVENT_CLASS="dispatch-delegate" ;;
+            workflow_dispatch:settle)
+              MODE="settle"; EVENT_CLASS="dispatch-settle" ;;
+            workflow_dispatch:import-memory)
+              MODE="act"; EVENT_CLASS="dispatch-import-memory" ;;
+            issues:*)
+              MODE="act"; EVENT_CLASS="issue-opened" ;;
+            issue_comment:*)
+              if [[ "$ACTOR" == *"[bot]" ]]; then
+                MODE="act"; EVENT_CLASS="ignored-bot-comment"
+              elif jq -e '.issue.pull_request' "$GITHUB_EVENT_PATH" >/dev/null 2>&1; then
+                MODE="act"; EVENT_CLASS="ignored-pr-comment"
+              else
+                MODE="act"; EVENT_CLASS="comment-issue"
+              fi ;;
+            pull_request:*|pull_request_target:*)
+              MODE="think"; EVENT_CLASS="pr" ;;
+            merge_group:*)
+              MODE="think"; EVENT_CLASS="merge-group" ;;
+            schedule:*)
+              MODE="observe"; EVENT_CLASS="cron-daily" ;;
+            push:*)
+              if [ "$REF_NAME" = "main" ]; then
+                MODE="settle"; EVENT_CLASS="push-main"
+              else
+                MODE="act"; EVENT_CLASS="push-branch"
+              fi ;;
+            *)
+              MODE="act"; EVENT_CLASS="unknown" ;;
+          esac
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "event_class=$EVENT_CLASS" >> "$GITHUB_OUTPUT"
+          echo "settlement_id=$SETTLEMENT_ID" >> "$GITHUB_OUTPUT"
+
+  act-install:
+    name: act/install
+    runs-on: ubuntu-latest
+    needs: setup
     if: >-
-      github.event_name == 'workflow_dispatch'
+      needs.setup.outputs.mode == 'act'
+      && needs.setup.outputs.event_class == 'manual-install'
       && github.repository != 'japer-technology/github-society-intelligence'
     steps:
-
-      # 1. Check out the repository so we can inspect and modify its contents.
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          # Always operate on the default branch (usually "main").
           ref: ${{ github.event.repository.default_branch }}
 
-      # 2. Determine whether to install, upgrade, or skip.
-      #    • No folder       → action=install
-      #    • Folder present, local VERSION < template VERSION → action=upgrade
-      #    • Folder present, local VERSION >= template VERSION → action=skip
       - name: Check for .github-society-intelligence
         id: check-folder
         run: |
           if [ ! -d ".github-society-intelligence" ]; then
             echo "action=install" >> "$GITHUB_OUTPUT"
-            echo "📦 .github-society-intelligence not found — will install."
+            echo ".github-society-intelligence not found; will install."
           else
             LOCAL_VERSION="0.0.0"
             if [ -f ".github-society-intelligence/VERSION" ]; then
               LOCAL_VERSION=$(tr -d '[:space:]' < .github-society-intelligence/VERSION)
             fi
 
-            # Fetch only the VERSION file from the template repository.
             REMOTE_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/japer-technology/github-society-intelligence/main/.github-society-intelligence/VERSION" | tr -d '[:space:]' || true)
 
             if [ -z "$REMOTE_VERSION" ]; then
-              echo "::warning::Could not fetch remote VERSION — skipping upgrade check."
+              echo "::warning::Could not fetch remote VERSION; skipping upgrade check."
               echo "action=skip" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
-            echo "Local VERSION:  $LOCAL_VERSION"
-            echo "Remote VERSION: $REMOTE_VERSION"
-
-            # Validate that both versions look like semver (digits and dots).
             SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
             if ! [[ "$LOCAL_VERSION" =~ $SEMVER_RE ]] || ! [[ "$REMOTE_VERSION" =~ $SEMVER_RE ]]; then
-              echo "::warning::VERSION format is not valid semver — skipping upgrade check."
+              echo "::warning::VERSION format is not valid semver; skipping upgrade check."
               echo "action=skip" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
-            # Compare semver components (major.minor.patch).
             IFS='.' read -r L_MAJOR L_MINOR L_PATCH <<< "$LOCAL_VERSION"
             IFS='.' read -r R_MAJOR R_MINOR R_PATCH <<< "$REMOTE_VERSION"
 
@@ -151,18 +184,11 @@ jobs:
 
             if [ "$NEEDS_UPGRADE" = true ]; then
               echo "action=upgrade" >> "$GITHUB_OUTPUT"
-              echo "⬆️  Upgrade available: $LOCAL_VERSION → $REMOTE_VERSION"
             else
               echo "action=skip" >> "$GITHUB_OUTPUT"
-              echo "✅ Local version ($LOCAL_VERSION) >= remote version ($REMOTE_VERSION) — nothing to do."
             fi
           fi
 
-      # 3. Download the template repository as a zip, extract it, and either
-      #    install fresh or upgrade the existing agent folder.
-      #    On fresh install: copies the agent folder and initialises defaults.
-      #    On upgrade: preserves user files (AGENTS.md, .pi/, state/), replaces
-      #    framework files, and restores the backups.
       - name: Download and install from template
         if: steps.check-folder.outputs.action != 'skip'
         run: |
@@ -171,72 +197,47 @@ jobs:
           ACTION="${{ steps.check-folder.outputs.action }}"
           TARGET=".github-society-intelligence"
 
-          # Download the latest template from the main branch.
           curl -fsSL "https://github.com/japer-technology/github-society-intelligence/archive/refs/heads/main.zip" \
             -o /tmp/template.zip
           unzip -q /tmp/template.zip -d /tmp/template
 
           EXTRACTED=$(ls -d /tmp/template/github-society-intelligence-*)
 
-          # Remove items from the extracted template that must not be copied
-          # into the user's repo (heavy dependencies and internal analysis).
           rm -rf "$EXTRACTED/$TARGET/node_modules"
           rm -rf "$EXTRACTED/$TARGET/docs/analysis"
 
           if [ "$ACTION" = "upgrade" ]; then
-            # Back up user-customised files before replacing framework files.
-            # Always start with a clean backup directory — a stale backup from a
-            # previous run (on persistent runners) would cause cp -R to nest
-            # directories inside themselves (.pi/.pi/.pi).
             BACKUP="/tmp/si-backup"
             rm -rf "$BACKUP"
             mkdir -p "$BACKUP"
             if [ -f "$TARGET/AGENTS.md" ]; then cp "$TARGET/AGENTS.md" "$BACKUP/AGENTS.md"; fi
-            if [ -d "$TARGET/.pi" ];       then cp -R "$TARGET/.pi" "$BACKUP/.pi"; fi
-            if [ -d "$TARGET/state" ];     then cp -R "$TARGET/state" "$BACKUP/state"; fi
+            if [ -d "$TARGET/.pi" ]; then cp -R "$TARGET/.pi" "$BACKUP/.pi"; fi
+            if [ -d "$TARGET/state" ]; then cp -R "$TARGET/state" "$BACKUP/state"; fi
 
             rm -rf "$TARGET"
             cp -R "$EXTRACTED/$TARGET" "$TARGET"
-
-            # Remove the source repo's session state.
             rm -rf "$TARGET/state"
 
-            # Restore user-customised files from backup.
-            # Remove destination dirs first so cp -R creates them fresh
-            # instead of nesting the source inside an existing directory.
             if [ -f "$BACKUP/AGENTS.md" ]; then cp "$BACKUP/AGENTS.md" "$TARGET/AGENTS.md"; fi
-            if [ -d "$BACKUP/.pi" ];       then rm -rf "$TARGET/.pi"; cp -R "$BACKUP/.pi" "$TARGET/.pi"; fi
-            if [ -d "$BACKUP/state" ];     then rm -rf "$TARGET/state"; cp -R "$BACKUP/state" "$TARGET/state"; fi
+            if [ -d "$BACKUP/.pi" ]; then rm -rf "$TARGET/.pi"; cp -R "$BACKUP/.pi" "$TARGET/.pi"; fi
+            if [ -d "$BACKUP/state" ]; then rm -rf "$TARGET/state"; cp -R "$BACKUP/state" "$TARGET/state"; fi
 
-            # Defensive cleanup: remove any nested .pi directories that may have
-            # been created by prior runs affected by the cp -R nesting bug.
             if [ -d "$TARGET/.pi/.pi" ]; then
-              echo "⚠️  Removing nested .pi/.pi directory (artifact of prior nesting bug)."
               rm -rf "$TARGET/.pi/.pi"
             fi
           else
-            # Fresh install.
             cp -R "$EXTRACTED/$TARGET" "$TARGET"
-
-            # Remove the source repo's session state — each repo starts fresh.
             rm -rf "$TARGET/state"
-
-            # Initialise defaults for a fresh install:
-            #   • AGENTS.md — the agent's identity file (editable by the user).
-            #   • settings.json — default LLM provider and model configuration.
             cp "$TARGET/install/SOCIETY-INTELLIGENCE-AGENTS.md" "$TARGET/AGENTS.md"
             mkdir -p "$TARGET/.pi"
             cp "$TARGET/install/settings.json" "$TARGET/.pi/settings.json"
           fi
 
-      # 4. Ensure common ignore patterns are present in .gitignore so that
-      #    node_modules, OS junk files, the pi agent's auto-created .pi/
-      #    directory at the repo root, and the scratch artefacts produced by
-      #    the local-chat runner (lifecycle/local-chat.ts — invoked via
-      #    `bun run chat`) never get committed. The local-chat patterns cover
-      #    its per-thread state directory, its last-run debug log, and the
-      #    occasional tool scratch files that some pi tools drop at the
-      #    repo root.
+          if [ -d "$EXTRACTED/.github/actions" ]; then
+            mkdir -p ".github/actions"
+            cp -R "$EXTRACTED/.github/actions/setup-society" ".github/actions/setup-society"
+          fi
+
       - name: Ensure .gitignore entries
         if: steps.check-folder.outputs.action != 'skip'
         run: |
@@ -253,9 +254,6 @@ jobs:
             grep -qxF "$entry" .gitignore || echo "$entry" >> .gitignore
           done
 
-      # 4b. Ensure required Git attributes are present in .gitattributes so
-      #     that the append-only memory log merges correctly across parallel
-      #     agent runs (union merge driver).
       - name: Ensure .gitattributes entries
         if: steps.check-folder.outputs.action != 'skip'
         run: |
@@ -264,15 +262,13 @@ jobs:
             grep -qxF "$entry" .gitattributes || echo "$entry" >> .gitattributes
           done
 
-      # 5. Commit and push. Uses the appropriate message for install vs upgrade.
-      #    If nothing changed (edge case), the step is a harmless no-op.
       - name: Commit and push
         if: steps.check-folder.outputs.action != 'skip'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add .github-society-intelligence/ .gitignore .gitattributes
+          git add .github-society-intelligence/ .github/actions/ .gitignore .gitattributes
 
           ACTION="${{ steps.check-folder.outputs.action }}"
           if [ "$ACTION" = "upgrade" ]; then
@@ -288,59 +284,33 @@ jobs:
             git push
           fi
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # JOB 2 — run-agent
-  #
-  # Purpose : The core AI agent. Reads the issue (or comment), loads the
-  #           conversation session from git, sends it to the configured LLM,
-  #           and posts the response back as an issue comment.
-  # Trigger : issues.opened OR issue_comment.created (ignoring bot & PR comments).
-  # Security: Only collaborators with write/maintain/admin access can trigger.
-  # ────────────────────────────────────────────────────────────────────────────
-  run-agent:
+  act-conversational-bee-respond:
+    name: act/conversational-bee/respond
     runs-on: ubuntu-latest
-
-    # Concurrency: one agent run per issue at a time. If the user posts two
-    # comments quickly, the second run waits for the first to finish rather
-    # than cancelling it (cancel-in-progress: false). The group key includes
-    # the issue number so different issues run in parallel.
+    needs: setup
     concurrency:
-      group: github-society-intelligence-${{ github.repository }}-issue-${{ github.event.issue.number }}
+      group: github-society-intelligence-${{ github.repository }}-issue-${{ github.event.issue.number || github.run_id }}
       cancel-in-progress: false
-
-    # Trigger guard:
-    #   • Run on new issues.
-    #   • Run on issue comments, BUT skip comments posted by bots (the agent
-    #     itself) to avoid infinite loops, AND skip comments on pull requests
-    #     (issue_comment fires for both issues and PRs).
     if: >-
-      (github.event_name == 'issues')
-      || (github.event_name == 'issue_comment' && !github.event.issue.pull_request && !endsWith(github.event.comment.user.login, '[bot]'))
+      needs.setup.outputs.mode == 'act'
+      && (
+        needs.setup.outputs.event_class == 'issue-opened'
+        || needs.setup.outputs.event_class == 'comment-issue'
+      )
     steps:
-
-      # 1. AUTHORIZATION — verify the actor has write-level (or higher) access
-      #    to the repository. This prevents random users on public repos from
-      #    consuming your LLM credits. On success a 🚀 reaction is added to
-      #    signal the agent is working; the reaction state is saved to a temp
-      #    file so the agent can later replace it with 👍 on completion.
       - name: Authorize
         id: authorize
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Query the GitHub API for the actor's permission level on this repo.
           PERM=$(gh api "repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission" --jq '.permission' 2>/dev/null || echo "none")
           echo "Actor: ${{ github.actor }}, Permission: $PERM"
 
-          # Reject anyone below write access.
           if [[ "$PERM" != "admin" && "$PERM" != "maintain" && "$PERM" != "write" ]]; then
             echo "::error::Unauthorized: ${{ github.actor }} has '$PERM' permission"
             exit 1
           fi
 
-          # Add a 🚀 "rocket" reaction to the comment or issue as a visual
-          # indicator that the agent has started processing. Save the reaction
-          # ID so the agent can swap it for 👍 when it finishes.
           if [[ "${{ github.event_name }}" == "issue_comment" ]]; then
             REACTION_ID=$(gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" -f content=rocket --jq '.id' 2>/dev/null || echo "")
             if [[ -n "$REACTION_ID" ]]; then RID_JSON="\"$REACTION_ID\""; else RID_JSON="null"; fi
@@ -351,8 +321,6 @@ jobs:
             echo '{"reactionId":'"$RID_JSON"',"reactionTarget":"issue","commentId":null,"issueNumber":${{ github.event.issue.number }},"repo":"${{ github.repository }}"}' > /tmp/reaction-state.json
           fi
 
-      # 2. REJECTION FEEDBACK — if authorization failed, add a 👎 reaction so
-      #    the user gets immediate visual feedback that their request was denied.
       - name: Reject
         if: ${{ failure() && steps.authorize.outcome == 'failure' }}
         env:
@@ -364,16 +332,12 @@ jobs:
             gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/reactions" -f content=-1
           fi
 
-      # 3. CHECKOUT — clone the full repository (fetch-depth: 0) so the agent
-      #    can read prior session history, project files, and commit new state.
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0   # Full history needed — the agent reads and commits session state.
+          fetch-depth: 0
 
-      # 4. SAFETY CHECK — ensure the agent folder exists. If the user hasn't
-      #    run the run-install job yet, skip gracefully instead of crashing.
       - name: Check for .github-society-intelligence
         id: check-folder
         run: |
@@ -384,17 +348,12 @@ jobs:
             echo "::notice::.github-society-intelligence folder not found, skipping."
           fi
 
-      # 5. RUNTIME — install Bun, a fast JavaScript/TypeScript runtime. The
-      #    agent code (lifecycle/agent.ts) runs directly under Bun without a
-      #    separate compile step.
       - name: Setup Bun
         if: steps.check-folder.outputs.exists == 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.2"   # Pinned for reproducible builds across runs.
+          bun-version: "1.2"
 
-      # 6. CACHE — restore node_modules from a prior run when bun.lock hasn't
-      #    changed. Shaves ~5-10 seconds off the typical cold-start install.
       - name: Cache dependencies
         if: steps.check-folder.outputs.exists == 'true'
         uses: actions/cache@v5
@@ -402,20 +361,10 @@ jobs:
           path: .github-society-intelligence/node_modules
           key: si-deps-${{ hashFiles('.github-society-intelligence/bun.lock') }}
 
-      # 7. INSTALL — install (or verify) the agent's npm dependencies.
-      #    --frozen-lockfile ensures the lockfile is never modified, so builds
-      #    are deterministic.
       - name: Install dependencies
         if: steps.check-folder.outputs.exists == 'true'
         run: cd .github-society-intelligence && bun install --frozen-lockfile
 
-      # 8. RUN THE AGENT — execute the core agent script. It reads the
-      #    triggering issue/comment, loads the matching conversation session,
-      #    calls the configured LLM, posts the reply, and commits state.
-      #
-      #    All supported LLM provider keys are passed as environment variables.
-      #    Only the key for your chosen provider needs to be set as a secret;
-      #    the others will simply be empty and are safely ignored.
       - name: Run
         if: steps.check-folder.outputs.exists == 'true'
         env:
@@ -428,4 +377,410 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PI_CACHE_RETENTION: long
+          GSI_SOCIETY_MODE: act
+          GSI_EVENT_CLASS: ${{ needs.setup.outputs.event_class }}
+          GSI_SETTLEMENT_ID: ${{ needs.setup.outputs.settlement_id }}
         run: bun .github-society-intelligence/lifecycle/agent.ts
+
+  act-import-memory-open:
+    name: act/import-memory/open
+    runs-on: ubuntu-latest
+    needs: setup
+    if: >-
+      needs.setup.outputs.mode == 'act'
+      && needs.setup.outputs.event_class == 'dispatch-import-memory'
+    steps:
+      - name: Import memory scaffold
+        run: |
+          echo "Memory import PR opening is reserved for the staged society implementation."
+
+  think-censor-dispatcher-integrity:
+    name: censor/dispatcher-integrity
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate dispatcher invariants
+        run: |
+          set -euo pipefail
+          test -f ".github/workflows/github-society-intelligence-agent.yml"
+          grep -q "outputs:" ".github/workflows/github-society-intelligence-agent.yml"
+          grep -q "mode:" ".github/workflows/github-society-intelligence-agent.yml"
+          grep -q "event_class:" ".github/workflows/github-society-intelligence-agent.yml"
+          grep -q "settlement_id:" ".github/workflows/github-society-intelligence-agent.yml"
+          if find .github/workflows -maxdepth 1 -type f \( -name "think.yml" -o -name "act.yml" -o -name "agent.yml" -o -name "censor.yml" -o -name "observe.yml" -o -name "delegate.yml" -o -name "settle.yml" \) | grep -q .; then
+            echo "::error::Forbidden PLAN-derived workflow file found."
+            exit 1
+          fi
+
+  think-censor-mode-gating:
+    name: censor/mode-gating
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.2"
+      - name: Validate workflow mode gating
+        run: bun .github-society-intelligence/lifecycle/validate-workflow.ts
+
+  think-censor-job-naming:
+    name: censor/job-naming
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.2"
+      - name: Validate workflow job naming
+        run: bun .github-society-intelligence/lifecycle/validate-workflow.ts
+
+  think-censor-credential:
+    name: censor/credential
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Scan changed lines for obvious credentials
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+          DIFF=$(git diff --unified=0 "origin/$BASE_REF"...HEAD || git diff --unified=0 HEAD~1..HEAD || true)
+          if printf '%s\n' "$DIFF" | grep -E '^\+' | grep -Ei '(BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY|AKIA[0-9A-Z]{16}|OPENAI_API_KEY=|ANTHROPIC_API_KEY=|GITHUB_TOKEN=gh[pousr]_)'; then
+            echo "::error::Potential credential found in changed lines."
+            exit 1
+          fi
+
+  think-censor-pii:
+    name: censor/pii
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Scan changed lines for obvious PII patterns
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+          DIFF=$(git diff --unified=0 "origin/$BASE_REF"...HEAD || git diff --unified=0 HEAD~1..HEAD || true)
+          if printf '%s\n' "$DIFF" | grep -E '^\+' | grep -E '([0-9]{3}-[0-9]{2}-[0-9]{4}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})'; then
+            echo "::warning::Potential PII found. This scaffold warns today; later stages may fail closed."
+          fi
+
+  think-censor-representation-class:
+    name: censor/representation-class
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Require representation class on memory YAML
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+          FILES=$(git diff --name-only "origin/$BASE_REF"...HEAD || true)
+          for file in $FILES; do
+            case "$file" in
+              .github-society-intelligence/memory/*.yaml|.github-society-intelligence/memory/**/*.yaml)
+                if [ -f "$file" ] && ! grep -q '^representation_class:' "$file"; then
+                  echo "::error::$file must declare representation_class."
+                  exit 1
+                fi
+                ;;
+            esac
+          done
+
+  think-censor-append-only:
+    name: censor/append-only
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Protect append-only ledgers and settlement records
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+          CHANGES=$(git diff --name-status "origin/$BASE_REF"...HEAD || true)
+          while read -r status file rest; do
+            [ -z "${status:-}" ] && continue
+            case "$file" in
+              .github-society-intelligence/memory/ledger/entries/*|.github-society-intelligence/settlements/*)
+                if [ "$status" != "A" ]; then
+                  echo "::error::$file is append-only and may only be added."
+                  exit 1
+                fi
+                ;;
+            esac
+          done <<< "$CHANGES"
+
+  think-censor-cross-directory-write:
+    name: censor/cross-directory-write
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Detect cross-agency writes
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+          AGENCIES=$(git diff --name-only "origin/$BASE_REF"...HEAD \
+            | awk -F/ '/^\.github-society-intelligence\/agencies\/[^/]+\// { print $3 }' \
+            | sort -u \
+            | wc -l \
+            | tr -d ' ')
+          if [ "${AGENCIES:-0}" -gt 1 ] && [ -z "${{ needs.setup.outputs.settlement_id }}" ]; then
+            echo "::warning::Cross-agency writes should carry a settlement ID. This scaffold warns until settlement labels are available to setup."
+          fi
+
+  think-censor-authority:
+    name: censor/authority
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify governance authority files exist
+        run: |
+          set -euo pipefail
+          test -f ".github-society-intelligence/governance/constitution.yaml"
+          test -f ".github-society-intelligence/governance/authority-registry.yaml"
+
+  think-cognition-perceive:
+    name: think/cognition/perceive
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - name: Perceive scaffold
+        run: echo "Perception step reserved for staged society cognition."
+
+  think-cognition-activate:
+    name: think/cognition/activate
+    runs-on: ubuntu-latest
+    needs: [setup, think-cognition-perceive]
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - name: Activate scaffold
+        run: echo "Frame and K-line activation step reserved for staged society cognition."
+
+  think-cognition-critique:
+    name: think/cognition/critique
+    runs-on: ubuntu-latest
+    needs: [setup, think-cognition-activate]
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - name: Critique scaffold
+        run: echo "Critic step reserved for staged society cognition."
+
+  think-cognition-censor-aggregate:
+    name: think/cognition/censor-aggregate
+    runs-on: ubuntu-latest
+    needs: [setup, think-censor-dispatcher-integrity, think-censor-mode-gating, think-censor-job-naming, think-censor-credential, think-censor-pii, think-censor-representation-class, think-censor-append-only, think-censor-cross-directory-write, think-censor-authority, think-cognition-critique]
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - name: Aggregate censor results
+        run: echo "All required think-mode censors and cognition scaffolds completed."
+
+  think-cognition-consolidate-wait:
+    name: censor/consolidation-window
+    runs-on: ubuntu-latest
+    needs: [setup, think-cognition-censor-aggregate]
+    if: needs.setup.outputs.mode == 'think'
+    steps:
+      - name: Consolidation window scaffold
+        run: echo "Consolidation window enforcement is reserved for the staged society implementation."
+
+  observe-censor-b-brain-content-access:
+    name: censor/b-brain-content-access
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify B-brain constitutions are metadata-only
+        run: |
+          set -euo pipefail
+          if grep -R "read_content: true" .github-society-intelligence/agencies/b-brains; then
+            echo "::error::B-brain content access must remain disabled."
+            exit 1
+          fi
+
+  observe-b-brain-activation-steward:
+    name: observe/b-brain/activation-steward
+    runs-on: ubuntu-latest
+    needs: [setup, observe-censor-b-brain-content-access]
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - name: Activation steward scaffold
+        run: echo "Activation steward observes metadata only."
+
+  observe-b-brain-memory-steward:
+    name: observe/b-brain/memory-steward
+    runs-on: ubuntu-latest
+    needs: [setup, observe-censor-b-brain-content-access]
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - name: Memory steward scaffold
+        run: echo "Memory steward observes metadata only."
+
+  observe-b-brain-channel-steward:
+    name: observe/b-brain/channel-steward
+    runs-on: ubuntu-latest
+    needs: [setup, observe-censor-b-brain-content-access]
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - name: Channel steward scaffold
+        run: echo "Channel steward observes metadata only."
+
+  observe-b-brain-bridge-steward:
+    name: observe/b-brain/bridge-steward
+    runs-on: ubuntu-latest
+    needs: [setup, observe-censor-b-brain-content-access]
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - name: Bridge steward scaffold
+        run: echo "Bridge steward observes metadata only."
+
+  observe-b-brain-economic-steward:
+    name: observe/b-brain/economic-steward
+    runs-on: ubuntu-latest
+    needs: [setup, observe-censor-b-brain-content-access]
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - name: Economic steward scaffold
+        run: echo "Economic steward observes metadata only."
+
+  observe-b-brain-governance-drift-steward:
+    name: observe/b-brain/governance-drift-steward
+    runs-on: ubuntu-latest
+    needs: [setup, observe-censor-b-brain-content-access]
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - name: Governance drift steward scaffold
+        run: echo "Governance drift steward observes metadata only."
+
+  observe-b-brain-self-model-steward:
+    name: observe/b-brain/self-model-steward
+    runs-on: ubuntu-latest
+    needs: [setup, observe-censor-b-brain-content-access]
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - name: Self-model steward scaffold
+        run: echo "Self-model steward observes metadata only."
+
+  observe-ecology-report:
+    name: observe/ecology-report
+    runs-on: ubuntu-latest
+    needs: [setup, observe-b-brain-activation-steward, observe-b-brain-memory-steward, observe-b-brain-channel-steward, observe-b-brain-bridge-steward, observe-b-brain-economic-steward, observe-b-brain-governance-drift-steward, observe-b-brain-self-model-steward]
+    if: needs.setup.outputs.mode == 'observe'
+    steps:
+      - name: Ecology report scaffold
+        run: echo "Ecology report publishing is reserved for the staged society implementation."
+
+  delegate-censor-delegation-depth:
+    name: censor/delegation-depth
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'delegate'
+    steps:
+      - name: Enforce delegation depth
+        env:
+          DELEGATION_DEPTH: ${{ github.event.inputs.delegation_depth || '1' }}
+        run: |
+          set -euo pipefail
+          if [ "$DELEGATION_DEPTH" -gt 1 ]; then
+            echo "::error::Stage 3 delegation depth cap is 1."
+            exit 1
+          fi
+
+  delegate-hop-1:
+    name: delegate/hop-1
+    runs-on: ubuntu-latest
+    needs: [setup, delegate-censor-delegation-depth]
+    if: needs.setup.outputs.mode == 'delegate'
+    steps:
+      - name: Delegate scaffold
+        env:
+          SETTLEMENT_ID: ${{ needs.setup.outputs.settlement_id }}
+          CHANNEL_ID: ${{ github.event.inputs.channel_id || '' }}
+          CONTRACT_SHA: ${{ github.event.inputs.contract_sha || '' }}
+          PAYLOAD_HASH: ${{ github.event.inputs.payload_hash || '' }}
+        run: |
+          echo "Delegation scaffold"
+          echo "settlement_id=$SETTLEMENT_ID"
+          echo "channel_id=$CHANNEL_ID"
+          echo "contract_sha=$CONTRACT_SHA"
+          echo "payload_hash=$PAYLOAD_HASH"
+
+  settle-censor-authority:
+    name: settle/censor/authority
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'settle'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify settlement authority
+        run: test -f ".github-society-intelligence/governance/authority-registry.yaml"
+
+  settle-censor-credit-assignment:
+    name: censor/credit-assignment
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'settle'
+    steps:
+      - name: Credit assignment scaffold
+        run: echo "Credit assignment enforcement is reserved for the staged society implementation."
+
+  settle-censor-append-only-ledger:
+    name: settle/censor/append-only-ledger
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.mode == 'settle'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify ledger maturity gate
+        run: |
+          set -euo pipefail
+          grep -q "economic_layer_enabled: false" .github-society-intelligence/governance/maturity.yaml
+
+  settle-close:
+    name: settle/close
+    runs-on: ubuntu-latest
+    needs: [setup, settle-censor-authority, settle-censor-credit-assignment, settle-censor-append-only-ledger]
+    concurrency:
+      group: github-society-intelligence-settle-${{ needs.setup.outputs.settlement_id || github.run_id }}
+      cancel-in-progress: false
+    if: needs.setup.outputs.mode == 'settle'
+    steps:
+      - name: Settlement closure scaffold
+        run: |
+          echo "Settlement closure is reserved for the staged society implementation."
+          echo "settlement_id=${{ needs.setup.outputs.settlement_id }}"

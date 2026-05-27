@@ -1,0 +1,17 @@
+rights:
+  default_input_classes:
+    accepted: []
+    forbidden:
+      - credential
+      - private_key
+      - payment_secret
+  default_output_rights:
+    requester_receives:
+      - response_text
+      - settlement_metadata
+    provider_may_retain:
+      - payload_hash
+      - credit_assignment
+    provider_may_not_retain:
+      - raw_credentials
+      - private_keys

@@ -1,0 +1,9 @@
+agency_id: critic-bee
+role: first_graduated_critic
+status: dormant_until_stage_3
+may:
+  - review_settlement_prs
+  - emit_structured_objections
+may_not:
+  - merge_settlements
+  - alter_conversational_bee_state_directly

@@ -1,0 +1,7 @@
+authorities:
+  - id: repo-maintainers
+    grants:
+      - governance_review
+      - settlement_approval
+      - branch_protection_administration
+    source: repository_permissions

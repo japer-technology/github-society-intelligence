@@ -1,0 +1,17 @@
+constitution_id: gsi.single_repo.v1
+scope: .github-society-intelligence
+principles:
+  - branch_is_thought
+  - pull_request_is_settlement
+  - merge_is_action
+  - memory_is_committed_history
+  - censors_are_required_checks
+  - critics_are_graduated
+  - b_brains_read_patterns_not_content
+workflow:
+  plan_derived_file: .github/workflows/github-society-intelligence-agent.yml
+  public_fabric_file: .github/workflows/gsi-public-fabric.yml
+  second_plan_workflow_allowed: false
+authority:
+  human_anchor_required: true
+  automation_may_merge_governance: false

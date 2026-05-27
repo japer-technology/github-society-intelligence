@@ -1,0 +1,28 @@
+censors:
+  - id: dispatcher-integrity
+    check_name: censor/dispatcher-integrity
+    mode: think
+  - id: mode-gating
+    check_name: censor/mode-gating
+    mode: think
+  - id: job-naming
+    check_name: censor/job-naming
+    mode: think
+  - id: credential
+    check_name: censor/credential
+    mode: think
+  - id: pii
+    check_name: censor/pii
+    mode: think
+  - id: representation-class
+    check_name: censor/representation-class
+    mode: think
+  - id: append-only
+    check_name: censor/append-only
+    mode: think
+  - id: cross-directory-write
+    check_name: censor/cross-directory-write
+    mode: think
+  - id: authority
+    check_name: censor/authority
+    mode: settle

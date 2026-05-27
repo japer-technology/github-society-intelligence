@@ -1,0 +1,9 @@
+agency_id: activation-steward
+role: observe_activation_patterns
+read_content: false
+may:
+  - inspect_metadata
+  - propose_ecology_report_items
+may_not:
+  - read_settlement_payloads
+  - merge_changes

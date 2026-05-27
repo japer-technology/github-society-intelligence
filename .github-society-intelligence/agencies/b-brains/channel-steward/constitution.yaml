@@ -1,0 +1,9 @@
+agency_id: channel-steward
+role: observe_channel_patterns
+read_content: false
+may:
+  - inspect_channel_metadata
+  - report_delegation_depth_trends
+may_not:
+  - dispatch_channel_calls
+  - merge_changes
