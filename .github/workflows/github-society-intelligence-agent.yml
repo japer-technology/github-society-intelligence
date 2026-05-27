@@ -41,8 +41,9 @@ on:
       - ".github/workflows/github-society-intelligence-agent.yml"
 
   # Metadata-only B-brain cadence. Observe jobs must never wake from PR events.
-  schedule:
-    - cron: "17 3 * * *"
+  # Cron schedule temporarily disabled to ensure zero scheduled events.
+  # schedule:
+  #   - cron: "17 3 * * *"
 
   # Manual dispatch is multiplexed by intent. Empty or install intent preserves
   # the original install/upgrade workflow behavior.
