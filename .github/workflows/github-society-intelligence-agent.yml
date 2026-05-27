@@ -102,23 +102,90 @@ jobs:
       event_class: ${{ steps.classify.outputs.event_class }}
       settlement_id: ${{ steps.classify.outputs.settlement_id }}
     steps:
-      # Local composite actions require a checkout before `uses: ./.github/...`.
-      # This keeps the dispatcher implementation in one reusable place instead
-      # of duplicating mode logic directly in this workflow.
-      - name: Checkout dispatcher action
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-
+      # The dispatcher is inlined here on purpose. setup must never depend on
+      # any file inside `.github-society-intelligence/`, because that folder
+      # does not exist before the act/install job runs. If setup tried to
+      # `uses: ./.github-society-intelligence/...` it would fail on a fresh
+      # target repository and the install job would never get a chance to
+      # create the folder. Keep this script mirrored with
+      # `.github-society-intelligence/lifecycle/society/setup-society/action.yml`
+      # and `.github-society-intelligence/lifecycle/society/dispatcher.ts`.
       - name: Classify society event
         id: classify
-        uses: ./.github-society-intelligence/lifecycle/society/setup-society
-        with:
-          intent: ${{ github.event.inputs.intent || '' }}
-          settlement_id: ${{ github.event.inputs.settlement_id || '' }}
+        env:
+          INPUT_INTENT: ${{ github.event.inputs.intent || '' }}
+          INPUT_SETTLEMENT_ID: ${{ github.event.inputs.settlement_id || '' }}
+        run: |
+          set -euo pipefail
+
+          EVENT_NAME="${GITHUB_EVENT_NAME:-}"
+          INTENT="${INPUT_INTENT}"
+          SETTLEMENT_INPUT="${INPUT_SETTLEMENT_ID}"
+          REF_NAME="${GITHUB_REF_NAME:-}"
+          HEAD_REF="${GITHUB_HEAD_REF:-}"
+          ACTOR="${GITHUB_ACTOR:-}"
+
+          MODE="act"
+          EVENT_CLASS="unknown"
+          SETTLEMENT_ID="$SETTLEMENT_INPUT"
+
+          if [ -z "$SETTLEMENT_ID" ]; then
+            SOURCE_REF="${HEAD_REF:-$REF_NAME}"
+            if [[ "$SOURCE_REF" =~ (stl-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{3}) ]]; then
+              SETTLEMENT_ID="${BASH_REMATCH[1]}"
+            fi
+          fi
+
+          case "$EVENT_NAME:$INTENT" in
+            workflow_dispatch:|workflow_dispatch:install)
+              MODE="act"; EVENT_CLASS="manual-install" ;;
+            workflow_dispatch:observe)
+              MODE="observe"; EVENT_CLASS="dispatch-observe" ;;
+            workflow_dispatch:delegate)
+              MODE="delegate"; EVENT_CLASS="dispatch-delegate" ;;
+            workflow_dispatch:settle)
+              MODE="settle"; EVENT_CLASS="dispatch-settle" ;;
+            workflow_dispatch:import-memory)
+              MODE="act"; EVENT_CLASS="dispatch-import-memory" ;;
+            issues:*)
+              MODE="act"; EVENT_CLASS="issue-opened" ;;
+            issue_comment:*)
+              if [[ "$ACTOR" == *"[bot]" ]]; then
+                MODE="act"; EVENT_CLASS="ignored-bot-comment"
+              elif jq -e '.issue.pull_request' "$GITHUB_EVENT_PATH" >/dev/null 2>&1; then
+                MODE="act"; EVENT_CLASS="ignored-pr-comment"
+              else
+                MODE="act"; EVENT_CLASS="comment-issue"
+              fi ;;
+            pull_request:*|pull_request_target:*)
+              MODE="think"; EVENT_CLASS="pr" ;;
+            merge_group:*)
+              MODE="think"; EVENT_CLASS="merge-group" ;;
+            schedule:*)
+              MODE="observe"; EVENT_CLASS="cron-daily" ;;
+            push:*)
+              if [ "$REF_NAME" = "main" ]; then
+                MODE="settle"; EVENT_CLASS="push-main"
+              else
+                MODE="act"; EVENT_CLASS="push-branch"
+              fi ;;
+            *)
+              MODE="act"; EVENT_CLASS="unknown" ;;
+          esac
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "event_class=$EVENT_CLASS" >> "$GITHUB_OUTPUT"
+          echo "settlement_id=$SETTLEMENT_ID" >> "$GITHUB_OUTPUT"
 
   # act/install preserves the original template installer. It remains manual-only
   # and is disabled in the template repository to avoid self-install recursion.
+  #
+  # By contract this job is a strict one-shot installer: it may only act while
+  # `.github-society-intelligence` does not yet exist in the target repository.
+  # Once the folder is present the job becomes a no-op so install can never
+  # overwrite, upgrade, or otherwise interfere with state that the installed
+  # framework manages itself. Upgrades and any other folder mutations belong to
+  # the installed framework, not to this workflow file.
   act-install:
     name: act/install
     runs-on: ubuntu-latest
@@ -136,55 +203,19 @@ jobs:
       - name: Check for .github-society-intelligence
         id: check-folder
         run: |
-          if [ ! -d ".github-society-intelligence" ]; then
-            echo "action=install" >> "$GITHUB_OUTPUT"
-            echo ".github-society-intelligence not found; will install."
+          if [ -d ".github-society-intelligence" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::.github-society-intelligence already exists; install is a no-op."
           else
-            LOCAL_VERSION="0.0.0"
-            if [ -f ".github-society-intelligence/VERSION" ]; then
-              LOCAL_VERSION=$(tr -d '[:space:]' < .github-society-intelligence/VERSION)
-            fi
-
-            REMOTE_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/japer-technology/github-society-intelligence/main/.github-society-intelligence/VERSION" | tr -d '[:space:]' || true)
-
-            if [ -z "$REMOTE_VERSION" ]; then
-              echo "::warning::Could not fetch remote VERSION; skipping upgrade check."
-              echo "action=skip" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
-            if ! [[ "$LOCAL_VERSION" =~ $SEMVER_RE ]] || ! [[ "$REMOTE_VERSION" =~ $SEMVER_RE ]]; then
-              echo "::warning::VERSION format is not valid semver; skipping upgrade check."
-              echo "action=skip" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            IFS='.' read -r L_MAJOR L_MINOR L_PATCH <<< "$LOCAL_VERSION"
-            IFS='.' read -r R_MAJOR R_MINOR R_PATCH <<< "$REMOTE_VERSION"
-
-            NEEDS_UPGRADE=false
-            if [ "$R_MAJOR" -gt "$L_MAJOR" ]; then
-              NEEDS_UPGRADE=true
-            elif [ "$R_MAJOR" -eq "$L_MAJOR" ] && [ "$R_MINOR" -gt "$L_MINOR" ]; then
-              NEEDS_UPGRADE=true
-            elif [ "$R_MAJOR" -eq "$L_MAJOR" ] && [ "$R_MINOR" -eq "$L_MINOR" ] && [ "$R_PATCH" -gt "$L_PATCH" ]; then
-              NEEDS_UPGRADE=true
-            fi
-
-            if [ "$NEEDS_UPGRADE" = true ]; then
-              echo "action=upgrade" >> "$GITHUB_OUTPUT"
-            else
-              echo "action=skip" >> "$GITHUB_OUTPUT"
-            fi
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo ".github-society-intelligence not found; will install."
           fi
 
       - name: Download and install from template
-        if: steps.check-folder.outputs.action != 'skip'
+        if: steps.check-folder.outputs.exists == 'false'
         run: |
           set -euo pipefail
 
-          ACTION="${{ steps.check-folder.outputs.action }}"
           TARGET=".github-society-intelligence"
 
           curl -fsSL "https://github.com/japer-technology/github-society-intelligence/archive/refs/heads/main.zip" \
@@ -196,35 +227,14 @@ jobs:
           rm -rf "$EXTRACTED/$TARGET/node_modules"
           rm -rf "$EXTRACTED/$TARGET/docs/analysis"
 
-          if [ "$ACTION" = "upgrade" ]; then
-            BACKUP="/tmp/si-backup"
-            rm -rf "$BACKUP"
-            mkdir -p "$BACKUP"
-            if [ -f "$TARGET/AGENTS.md" ]; then cp "$TARGET/AGENTS.md" "$BACKUP/AGENTS.md"; fi
-            if [ -d "$TARGET/.pi" ]; then cp -R "$TARGET/.pi" "$BACKUP/.pi"; fi
-            if [ -d "$TARGET/state" ]; then cp -R "$TARGET/state" "$BACKUP/state"; fi
-
-            rm -rf "$TARGET"
-            cp -R "$EXTRACTED/$TARGET" "$TARGET"
-            rm -rf "$TARGET/state"
-
-            if [ -f "$BACKUP/AGENTS.md" ]; then cp "$BACKUP/AGENTS.md" "$TARGET/AGENTS.md"; fi
-            if [ -d "$BACKUP/.pi" ]; then rm -rf "$TARGET/.pi"; cp -R "$BACKUP/.pi" "$TARGET/.pi"; fi
-            if [ -d "$BACKUP/state" ]; then rm -rf "$TARGET/state"; cp -R "$BACKUP/state" "$TARGET/state"; fi
-
-            if [ -d "$TARGET/.pi/.pi" ]; then
-              rm -rf "$TARGET/.pi/.pi"
-            fi
-          else
-            cp -R "$EXTRACTED/$TARGET" "$TARGET"
-            rm -rf "$TARGET/state"
-            cp "$TARGET/install/SOCIETY-INTELLIGENCE-AGENTS.md" "$TARGET/AGENTS.md"
-            mkdir -p "$TARGET/.pi"
-            cp "$TARGET/install/settings.json" "$TARGET/.pi/settings.json"
-          fi
+          cp -R "$EXTRACTED/$TARGET" "$TARGET"
+          rm -rf "$TARGET/state"
+          cp "$TARGET/install/SOCIETY-INTELLIGENCE-AGENTS.md" "$TARGET/AGENTS.md"
+          mkdir -p "$TARGET/.pi"
+          cp "$TARGET/install/settings.json" "$TARGET/.pi/settings.json"
 
       - name: Ensure .gitignore entries
-        if: steps.check-folder.outputs.action != 'skip'
+        if: steps.check-folder.outputs.exists == 'false'
         run: |
           touch .gitignore
           for entry in \
@@ -240,7 +250,7 @@ jobs:
           done
 
       - name: Ensure .gitattributes entries
-        if: steps.check-folder.outputs.action != 'skip'
+        if: steps.check-folder.outputs.exists == 'false'
         run: |
           touch .gitattributes
           for entry in "memory.log merge=union"; do
@@ -248,24 +258,17 @@ jobs:
           done
 
       - name: Commit and push
-        if: steps.check-folder.outputs.action != 'skip'
+        if: steps.check-folder.outputs.exists == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add .github-society-intelligence/ .gitignore .gitattributes
 
-          ACTION="${{ steps.check-folder.outputs.action }}"
-          if [ "$ACTION" = "upgrade" ]; then
-            COMMIT_MSG="chore: upgrade .github-society-intelligence from template"
-          else
-            COMMIT_MSG="chore: install .github-society-intelligence from template"
-          fi
-
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "$COMMIT_MSG"
+            git commit -m "chore: install .github-society-intelligence from template"
             git push
           fi
 
