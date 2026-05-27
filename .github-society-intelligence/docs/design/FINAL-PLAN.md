@@ -29,7 +29,7 @@ This invariant is enforced by `censor/mode-gating`, `censor/job-naming`, and `ce
 Implemented surfaces:
 
 - `setup` dispatcher job.
-- `.github/actions/setup-society/action.yml` as the workflow dispatcher implementation.
+- `.github-society-intelligence/lifecycle/society/setup-society/action.yml` as the workflow dispatcher implementation.
 - `act-install`, preserving the installer/upgrader.
 - `act-conversational-bee-respond`, preserving issue/comment response behavior.
 - stage-one think-mode censors.
