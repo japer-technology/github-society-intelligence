@@ -93,7 +93,7 @@ These principles bind the *implementer* when applying the §C structure. They si
 - **`event-class`** — a finer-grained tag (`pr-open`, `pr-sync`, `pr-merge-queue`, `comment-issue`, `cron-hourly`, `cron-daily`, `dispatch-delegate`, `dispatch-settle`, `tail-completion`, …) used by individual jobs' `if:` gates to scope themselves further.
 - **`settlement-id`** — the active settlement identifier if one is in scope (read from the PR branch name, the dispatch payload, or `workspace/active-settlements/`), or empty.
 
-`setup`'s implementation is a single composite action (`COST-REDUCTION.md §C P10`) under `.github/actions/setup-society/`. Every other job in `agent.yml` declares `needs: setup` and an `if:` gating on `needs.setup.outputs.mode == '<mode>'` (and optionally `event-class` and `settlement-id`).
+`setup`'s implementation is a single composite action (`COST-REDUCTION.md §C P10`) under `.github-society-intelligence/lifecycle/society/setup-society/`. Every other job in `agent.yml` declares `needs: setup` and an `if:` gating on `needs.setup.outputs.mode == '<mode>'` (and optionally `event-class` and `settlement-id`).
 
 ### C.2 The job pools
 
@@ -263,7 +263,7 @@ These would honour the file cap but violate `PLAN.md`, `COST-REDUCTION.md`, or `
 | Branch Protection management of N required checks emitted by N jobs in one file is harder to administer than the same N checks across N files | Required checks are addressed by name, not file; administration is identical. The administrative *legibility* burden is the trade-off the one-file shape makes consciously, and the §D mapping tables exist to mitigate it. |
 | A `workflow_run`-style cascade from `act` to `settle` requires the cascade to live in the same file | This plan permits intra-file `needs:`-chained cascades; `workflow_run` from `agent.yml` to itself is permitted but discouraged (prefer Branch Protection + a fresh PR), per the §B item 9 reading of `PLAN-MINIMUM.md §B item 4`. |
 | Concurrency-group collisions across modes on the same `ref` | The mode-derived group of §C.4 prevents collision between modes; collisions *within* a mode are handled by `cancel-in-progress` (think) or queueing (act, delegate, settle, observe). |
-| A regression in `setup` cascades to every job in the file | C-DI's fixture suite plus `C-MG`'s static gate ensure every job is mode-gated and the dispatcher is verifiable; the rollback for a bad `setup` change is a single PR reverting the composite action under `.github/actions/setup-society/`. |
+| A regression in `setup` cascades to every job in the file | C-DI's fixture suite plus `C-MG`'s static gate ensure every job is mode-gated and the dispatcher is verifiable; the rollback for a bad `setup` change is a single PR reverting the composite action under `.github-society-intelligence/lifecycle/society/setup-society/`. |
 | Public-fabric workflow's owners refuse consolidation, forcing the PLAN-derived cap to stay at one indefinitely | This is the *expected* steady state; no mitigation is required. The cap is a feature. |
 
 ### F.3 Reversibility summary

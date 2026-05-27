@@ -112,7 +112,7 @@ jobs:
 
       - name: Classify society event
         id: classify
-        uses: ./.github/actions/setup-society
+        uses: ./.github-society-intelligence/lifecycle/society/setup-society
         with:
           intent: ${{ github.event.inputs.intent || '' }}
           settlement_id: ${{ github.event.inputs.settlement_id || '' }}
@@ -223,11 +223,6 @@ jobs:
             cp "$TARGET/install/settings.json" "$TARGET/.pi/settings.json"
           fi
 
-          if [ -d "$EXTRACTED/.github/actions" ]; then
-            mkdir -p ".github/actions"
-            cp -R "$EXTRACTED/.github/actions/setup-society" ".github/actions/setup-society"
-          fi
-
       - name: Ensure .gitignore entries
         if: steps.check-folder.outputs.action != 'skip'
         run: |
@@ -258,7 +253,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add .github-society-intelligence/ .github/actions/ .gitignore .gitattributes
+          git add .github-society-intelligence/ .gitignore .gitattributes
 
           ACTION="${{ steps.check-folder.outputs.action }}"
           if [ "$ACTION" = "upgrade" ]; then

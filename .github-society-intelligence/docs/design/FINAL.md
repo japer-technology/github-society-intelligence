@@ -42,7 +42,7 @@ Mode routing:
 | `workflow_dispatch: delegate` | `delegate` | Governed inter-agency channel hop surface. |
 | `push` to `main` / `workflow_dispatch: settle` | `settle` | Settlement-side effects and closure surface. |
 
-The canonical dispatcher implementation for the workflow is `.github/actions/setup-society/action.yml`. The TypeScript implementation at `.github-society-intelligence/lifecycle/society/dispatcher.ts` mirrors it for local regression tests.
+The canonical dispatcher implementation for the workflow is `.github-society-intelligence/lifecycle/society/setup-society/action.yml`. The TypeScript implementation at `.github-society-intelligence/lifecycle/society/dispatcher.ts` mirrors it for local regression tests.
 
 ## Workflow Architecture
 
@@ -138,7 +138,7 @@ Additional future checks from `PLAN-SINGLE.md` land only when their stages are i
 Documentation and implementation must move together:
 
 - Any job graph change updates this file and `FINAL-PLAN.md`.
-- Any dispatcher route change updates `.github/actions/setup-society/action.yml`, `.github-society-intelligence/lifecycle/society/dispatcher.ts`, and dispatcher tests.
+- Any dispatcher route change updates `.github-society-intelligence/lifecycle/society/setup-society/action.yml`, `.github-society-intelligence/lifecycle/society/dispatcher.ts`, and dispatcher tests.
 - Any new required check updates `censors/registry.yaml`, Branch Protection documentation, and workflow validation tests.
 - Any new durable artifact type adds a schema or fixture before the artifact is used by a settlement.
 
@@ -179,7 +179,7 @@ Implemented now:
 
 - `FINAL.md`.
 - The stage-one society directory skeleton.
-- `setup` dispatcher via `.github/actions/setup-society/action.yml`.
+- `setup` dispatcher via `.github-society-intelligence/lifecycle/society/setup-society/action.yml`.
 - Mode-gated expansion of the existing workflow.
 - Workflow static validation script.
 - Dispatcher regression tests.
