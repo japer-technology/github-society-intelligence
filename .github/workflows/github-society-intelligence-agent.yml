@@ -422,6 +422,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.2"
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: .github-society-intelligence/node_modules
+          key: si-deps-${{ hashFiles('.github-society-intelligence/bun.lock') }}
+      - name: Install dependencies
+        run: cd .github-society-intelligence && bun install --frozen-lockfile
       - name: Validate workflow mode gating
         run: bun .github-society-intelligence/lifecycle/validate-workflow.ts
 
@@ -435,6 +442,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.2"
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: .github-society-intelligence/node_modules
+          key: si-deps-${{ hashFiles('.github-society-intelligence/bun.lock') }}
+      - name: Install dependencies
+        run: cd .github-society-intelligence && bun install --frozen-lockfile
       - name: Validate workflow job naming
         run: bun .github-society-intelligence/lifecycle/validate-workflow.ts
 
