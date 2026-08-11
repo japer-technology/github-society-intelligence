@@ -8,6 +8,9 @@
   </picture>
 </p>
 
+> [!WARNING]
+> This is pre-alpha. It is not yet conformant or safe for real execution.
+
 > **The forge is the mind. The repo is an agency. The branch is a thought. The pull request is a proposal. The merge is a committed change to the organism.**
 
 GitHub Society Intelligence is a repository-local AI framework that turns a single GitHub repository into the substrate for a Minsky-style cognitive society. Issues become stimuli, branches become insulated futures, pull requests become proposed actions, reviews become criticism, branch protection enforces censorship, merges become accepted changes, and commits become durable memory.
