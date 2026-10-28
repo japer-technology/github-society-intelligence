@@ -11,14 +11,18 @@
  *   3. `--rm` of an unknown ref must exit 2 (user error), not 1.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync, mkdtempSync } from "fs";
+import { existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 
 const MI_DIR = resolve(import.meta.dir, "..");
 const CHAT_SCRIPT = join(MI_DIR, "lifecycle", "local-chat.ts");
+const temporaryDirs: string[] = [];
+afterEach(() => {
+  for (const dir of temporaryDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 function runChat(args: string[], cwd: string) {
   // process.execPath points at the currently running Bun, regardless of PATH.
@@ -32,6 +36,7 @@ function runChat(args: string[], cwd: string) {
 describe("local-chat regression tests", () => {
   test("§3.4: --list from a foreign cwd does not nest state dirs", () => {
     const foreignCwd = mkdtempSync(join(tmpdir(), "gsi-cwd-"));
+    temporaryDirs.push(foreignCwd);
     const result = runChat(["--list"], foreignCwd);
 
     // Exit 0 expected; runner should anchor on its own __dirname, not cwd.

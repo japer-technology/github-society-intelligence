@@ -112,6 +112,8 @@ All state lives in the repo:
 
 Each issue number is a stable conversation key - `issue #N` → `state/issues/N.json` → `state/sessions/<session>.jsonl`. When you comment on an issue weeks later, the agent loads that linked session and continues. No database, no session cookies - just git.
 
+Each run passes an explicit session filename to `pi`; it never guesses from the newest transcript. Both runners load the repository's `.pi/` resources and `AGENTS.md`. Provider errors and missing replies fail the run. Git staging, commit, or rebase failures are reported with a warning on the issue and an error outcome reaction, rather than claiming the changes were saved. Conflicting rebases stop for manual resolution instead of silently choosing a side.
+
 ---
 
 ## Prerequisites

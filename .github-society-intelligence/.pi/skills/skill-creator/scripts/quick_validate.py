@@ -20,7 +20,7 @@ def validate_skill(skill_path):
     if not skill_md.exists():
         return False, "SKILL.md not found"
 
-    content = skill_md.read_text()
+    content = skill_md.read_text(encoding="utf-8")
     if not content.startswith("---"):
         return False, "No YAML frontmatter found"
 
@@ -42,7 +42,7 @@ def validate_skill(skill_path):
     unexpected_keys = set(frontmatter.keys()) - allowed_properties
     if unexpected_keys:
         allowed = ", ".join(sorted(allowed_properties))
-        unexpected = ", ".join(sorted(unexpected_keys))
+        unexpected = ", ".join(sorted(str(key) for key in unexpected_keys))
         return (
             False,
             f"Unexpected key(s) in SKILL.md frontmatter: {unexpected}. Allowed properties are: {allowed}",
@@ -57,6 +57,8 @@ def validate_skill(skill_path):
     if not isinstance(name, str):
         return False, f"Name must be a string, got {type(name).__name__}"
     name = name.strip()
+    if not name:
+        return False, "Name must not be empty"
     if name:
         if not re.match(r"^[a-z0-9-]+$", name):
             return (
@@ -79,6 +81,8 @@ def validate_skill(skill_path):
     if not isinstance(description, str):
         return False, f"Description must be a string, got {type(description).__name__}"
     description = description.strip()
+    if not description:
+        return False, "Description must not be empty"
     if description:
         if "<" in description or ">" in description:
             return False, "Description cannot contain angle brackets (< or >)"

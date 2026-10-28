@@ -4,11 +4,7 @@ import { dispatch } from "./society/dispatcher.ts";
 function readEvent(): any {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) return {};
-  try {
-    return JSON.parse(readFileSync(eventPath, "utf-8"));
-  } catch {
-    return {};
-  }
+  return JSON.parse(readFileSync(eventPath, "utf-8"));
 }
 
 const event = readEvent();

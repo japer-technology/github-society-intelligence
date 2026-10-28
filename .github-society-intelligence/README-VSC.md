@@ -168,10 +168,10 @@ flowchart TD
     E --> I{"Has prompt or<br/>--thread?"}
     I -- No --> J["EXIT 0<br/>(ID printed)"]
     I -- Yes --> H
-    H --> K["SNAPSHOT<br/>state/sessions/"]
+    H --> K["SELECT EXPLICIT SESSION PATH<br/>state/sessions/"]
     K --> L["SPAWN pi<br/>pi-mono and LLM"]
     L --> M["EXTRACT REPLY<br/>(in-process JSONL)"]
-    M --> N["ATTRIBUTE<br/>new session file<br/>to this thread"]
+    M --> N["VERIFY<br/>requested session file<br/>was written"]
     N --> O["UPDATE THREAD<br/>state/threads/N.json"]
     O --> P["PRINT REPLY<br/>👍"]
     P --> Q["END<br/>You see the reply"]
@@ -336,12 +336,16 @@ Exit codes:
 | 1 | Environment problem (missing API key, missing `pi` binary) |
 | 2 | User error (unknown thread, taken alias, malformed args) |
 
+`--new` without a prompt only allocates a thread and does not require a model or API key. One-shot provider failures return exit 1; missing keys in noninteractive use never open a recovery menu. Conflicting commands and missing option values return exit 2. Use `--` before prompts beginning with a hyphen.
+
+`/history` reads persisted session messages, and `/export md` retains their complete text and line breaks rather than exporting truncated previews.
+
 ### Identity model — closed world
 
 The hardest design problem in a local equivalent of "Issues-as-conversation" is identity. GitHub solves this for the production edition by *owning* issue numbers: you cannot pick them, cannot collide, and cannot accidentally re-use an old one. The local runner reproduces that property:
 
 1. Thread IDs are monotonic integers allocated by this tool, **never** by you. Each thread is persisted as `state/threads/<N>.json`.
-2. Allocation is atomic: `openSync(path, "wx")` either creates the file or fails with `EEXIST`. Concurrent `--new` invocations cannot claim the same ID.
+2. Allocation and alias checks share an exclusive registry lock, and mappings are published atomically. Concurrent allocation fails explicitly if the registry is busy; retry after the other operation completes. The `.last-id` counter prevents reuse after deletion. If a process is forcibly killed while holding `.registry.lock`, remove that lock only after confirming no other chat process is running.
 3. An optional `--name <alias>` may be attached, but the alias is layered *over* the ID. Alias collisions are rejected at creation time with a clear error pointing at the existing thread — never silently merged.
 4. `--thread <ref>` requires `<ref>` to resolve to an existing thread. Unknown references exit non-zero. **A typo cannot fork a new thread.**
 5. Alias grammar (`[A-Za-z][A-Za-z0-9_-]{0,63}`) forbids pure-digit aliases, so IDs and names can never be confused.
@@ -576,7 +580,7 @@ These take precedence over `.pi/settings.json` on a per-session basis — useful
 | `LOCAL_PROVIDER` | Override `defaultProvider` for this session. |
 | `LOCAL_MODEL` | Override `defaultModel`. |
 | `LOCAL_THINKING` | Override `defaultThinkingLevel` (`low` / `medium` / `high`). |
-| `LOCAL_LLM_BASE_URL` | Point an OpenAI-compatible client at a local server (see next section). Forwarded into `OPENAI_BASE_URL`; a placeholder `OPENAI_API_KEY=local` is injected so the SDK won't reject the request. |
+| `LOCAL_LLM_BASE_URL` | Register a local Chat Completions endpoint and custom model with pi. Takes precedence over `OPENAI_BASE_URL`; a placeholder key is supplied if `OPENAI_API_KEY` is unset. |
 | `NO_COLOR` / `FORCE_COLOR` | Disable / force ANSI colour in the launcher and REPL banners. |
 
 Example:
@@ -715,7 +719,7 @@ The two entry points are deliberately compatible: a session transcript written b
 
 **`pi did not create a session file for this turn — refusing to guess …`** — `pi` exited before producing a transcript (often a transient provider error printed to stderr just above the message). Inspect the stderr output, fix the underlying issue, and re-run; the thread mapping is untouched so you can retry safely. With auto-retry enabled (default for local providers) you'll see `⟳ Retry N/M` messages before the final failure.
 
-**Local LLM connections refused / hanging.** — Confirm the server is actually listening: `curl http://localhost:1234/v1/models` (LM Studio) or the equivalent for your runner. The runner forwards `LOCAL_LLM_BASE_URL` into `OPENAI_BASE_URL` and injects a placeholder key automatically — you don't need to set those yourself.
+**Local LLM connections refused / hanging.** — Confirm the server is actually listening: `curl http://localhost:1234/v1/models` (LM Studio) or the equivalent for your runner. The runner registers the endpoint and `LOCAL_MODEL` through `lifecycle/local-provider.ts`, using Chat Completions and a placeholder key when needed. `LOCAL_LLM_BASE_URL` overrides `OPENAI_BASE_URL`; without either, switching local brands selects that brand's default endpoint. The generic local model registration uses a 32,768-token context and 4,096-token output limit; adjust these in the extension if your server needs different limits.
 
 **The agent edited files I didn't expect.** — review them in the Source Control panel and discard. Consider switching to the read-only tool list (see [Configuration](#configuration)) for sensitive workspaces.
 

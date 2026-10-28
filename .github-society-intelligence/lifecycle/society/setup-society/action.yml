@@ -38,14 +38,17 @@ runs:
     - id: dispatch
       name: Compute mode, event class, and settlement ID
       shell: bash
+      env:
+        INPUT_INTENT: ${{ inputs.intent }}
+        INPUT_SETTLEMENT_ID: ${{ inputs.settlement_id }}
       run: |
         set -euo pipefail
 
         # Inputs from GitHub's event context. Keep these as plain strings so
         # dispatch remains transparent in Actions logs and easy to fixture-test.
         EVENT_NAME="${GITHUB_EVENT_NAME:-}"
-        INTENT="${{ inputs.intent }}"
-        SETTLEMENT_INPUT="${{ inputs.settlement_id }}"
+        INTENT=$(printf '%s' "$INPUT_INTENT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        SETTLEMENT_INPUT=$(printf '%s' "$INPUT_SETTLEMENT_ID" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         REF_NAME="${GITHUB_REF_NAME:-}"
         HEAD_REF="${GITHUB_HEAD_REF:-}"
         ACTOR="${GITHUB_ACTOR:-}"
@@ -53,15 +56,22 @@ runs:
         MODE="act"
         EVENT_CLASS="unknown"
         SETTLEMENT_ID="$SETTLEMENT_INPUT"
+        jq -e 'type == "object"' "$GITHUB_EVENT_PATH" >/dev/null
+        if [ -n "$SETTLEMENT_ID" ] && ! [[ "$SETTLEMENT_ID" =~ ^stl-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{3}$ ]]; then
+          echo "::error::Invalid settlement ID; expected stl-YYYY-MM-DD-NNN."
+          exit 1
+        fi
 
         # Settlement IDs are allowed to arrive explicitly through dispatch, or
         # implicitly through a branch name such as:
         #   think/stl-2026-05-26-001/conversational-bee/topic
         if [ -z "$SETTLEMENT_ID" ]; then
-          SOURCE_REF="${HEAD_REF:-$REF_NAME}"
-          if [[ "$SOURCE_REF" =~ (stl-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{3}) ]]; then
-            SETTLEMENT_ID="${BASH_REMATCH[1]}"
-          fi
+          for SOURCE_REF in "$HEAD_REF" "$REF_NAME"; do
+            if [[ "$SOURCE_REF" =~ (^|/)(stl-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{3})(/|$) ]]; then
+              SETTLEMENT_ID="${BASH_REMATCH[2]}"
+              break
+            fi
+          done
         fi
 
         # Routing table:
@@ -81,13 +91,15 @@ runs:
             MODE="settle"; EVENT_CLASS="dispatch-settle" ;;
           workflow_dispatch:import-memory)
             MODE="act"; EVENT_CLASS="dispatch-import-memory" ;;
+          workflow_dispatch:*)
+            MODE="act"; EVENT_CLASS="dispatch-unknown" ;;
           issues:*)
             MODE="act"; EVENT_CLASS="issue-opened" ;;
           issue_comment:*)
-            if [[ "$ACTOR" == *"[bot]" ]]; then
-              MODE="act"; EVENT_CLASS="ignored-bot-comment"
-            elif jq -e '.issue.pull_request' "$GITHUB_EVENT_PATH" >/dev/null 2>&1; then
+            if jq -e '.issue.pull_request' "$GITHUB_EVENT_PATH" >/dev/null; then
               MODE="act"; EVENT_CLASS="ignored-pr-comment"
+            elif [[ "$ACTOR" == *"[bot]" ]]; then
+              MODE="act"; EVENT_CLASS="ignored-bot-comment"
             else
               MODE="act"; EVENT_CLASS="comment-issue"
             fi ;;
