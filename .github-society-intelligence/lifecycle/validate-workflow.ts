@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "fs";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import { YAML } from "bun";
 
 const lifecycleDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(lifecycleDir, "..", "..");
@@ -36,8 +37,7 @@ const allowedJobPrefixes = [
 ];
 
 function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
+  throw new Error(message);
 }
 
 function workflowFiles(): string[] {
@@ -46,31 +46,8 @@ function workflowFiles(): string[] {
     .sort();
 }
 
-function extractJobs(workflowText: string): Map<string, string> {
-  const lines = workflowText.split(/\r?\n/);
-  const jobsStart = lines.findIndex((line) => line === "jobs:");
-  if (jobsStart === -1) fail("workflow is missing jobs:");
-
-  const jobs = new Map<string, string>();
-  let currentJob = "";
-  let currentStart = -1;
-
-  for (let i = jobsStart + 1; i < lines.length; i++) {
-    const match = lines[i].match(/^  ([A-Za-z0-9_-]+):\s*$/);
-    if (!match) continue;
-
-    if (currentJob) {
-      jobs.set(currentJob, lines.slice(currentStart, i).join("\n"));
-    }
-    currentJob = match[1];
-    currentStart = i;
-  }
-
-  if (currentJob) {
-    jobs.set(currentJob, lines.slice(currentStart).join("\n"));
-  }
-
-  return jobs;
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function assertWorkflowInventory() {
@@ -88,39 +65,44 @@ function assertWorkflowInventory() {
   }
 }
 
-function assertNoReusableWorkflow(workflowText: string) {
-  if (/workflow_call\s*:/.test(workflowText)) {
+export function validateWorkflow(workflowText: string): void {
+  const workflow = YAML.parse(workflowText);
+  if (!object(workflow) || !object(workflow.jobs)) fail("workflow is missing jobs:");
+  if (object(workflow.on) && "workflow_call" in workflow.on) {
     fail("reusable workflow declaration is forbidden");
   }
-  if (/uses:\s*.*\.github\/workflows\//.test(workflowText)) {
-    fail("calling another workflow file is forbidden");
-  }
-}
+  const jobs = workflow.jobs;
+  if (!object(jobs.setup)) fail("workflow is missing setup job");
 
-function assertJobShape(jobs: Map<string, string>) {
-  if (!jobs.has("setup")) fail("workflow is missing setup job");
-
-  for (const [jobId, block] of jobs.entries()) {
+  for (const [jobId, job] of Object.entries(jobs)) {
+    if (!object(job)) fail(`invalid job ${jobId}`);
+    if ("uses" in job) fail("calling another workflow file is forbidden");
     if (jobId === "setup") continue;
 
     if (!allowedJobPrefixes.some((prefix) => jobId.startsWith(prefix))) {
       fail(`job ${jobId} must start with one of ${allowedJobPrefixes.join(", ")}`);
     }
 
-    if (!/(^|\n)    needs:\s*setup\s*(\n|$)/.test(block) && !/(^|\n)    needs:\s*\[[^\]]*\bsetup\b[^\]]*\]/.test(block)) {
+    const needs = Array.isArray(job.needs) ? job.needs : [job.needs];
+    if (!needs.includes("setup")) {
       fail(`job ${jobId} must declare needs: setup`);
     }
+    for (const dependency of needs) {
+      if (typeof dependency !== "string" || !(dependency in jobs)) {
+        fail(`job ${jobId} has an unknown dependency`);
+      }
+    }
 
-    if (!block.includes("needs.setup.outputs.mode")) {
-      fail(`job ${jobId} must gate on needs.setup.outputs.mode`);
+    const mode = jobId.split("-")[0];
+    if (typeof job.if !== "string" ||
+        !new RegExp(`\\bneeds\\.setup\\.outputs\\.mode\\s*==\\s*['"]${mode}['"]`).test(job.if)) {
+      fail(`job ${jobId} must gate on needs.setup.outputs.mode == '${mode}'`);
     }
   }
 }
 
-assertWorkflowInventory();
-
-const workflowText = readFileSync(agentWorkflow, "utf-8");
-assertNoReusableWorkflow(workflowText);
-assertJobShape(extractJobs(workflowText));
-
-console.log("workflow validation passed");
+if (import.meta.main) {
+  assertWorkflowInventory();
+  validateWorkflow(readFileSync(agentWorkflow, "utf-8"));
+  console.log("workflow validation passed");
+}

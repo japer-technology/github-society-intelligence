@@ -44,6 +44,8 @@ Mode routing:
 
 The canonical dispatcher implementation for the workflow is `.github-society-intelligence/lifecycle/society/setup-society/action.yml`. The TypeScript implementation at `.github-society-intelligence/lifecycle/society/dispatcher.ts` mirrors it for local regression tests.
 
+Parity tests execute the installed shell dispatcher as well as the TypeScript implementation. Explicit settlement IDs must match `stl-YYYY-MM-DD-NNN`; malformed payloads fail rather than being classified as issue conversations.
+
 ## Workflow Architecture
 
 `github-society-intelligence-agent.yml` contains one job graph with five mode-prefixed pools:
@@ -67,6 +69,8 @@ Current concrete jobs:
 - `settle-close` establishes the non-cancellable settlement closure surface.
 
 Later stages fill in behavior inside these surfaces instead of adding workflows.
+
+Diff-based censors use the event's PR or merge-group base SHA and fail if that diff cannot be obtained. The aggregate and consolidation-window jobs run even when prerequisites fail or are skipped, and propagate those outcomes as failures instead of allowing a skipped required check to appear successful. Delegation depth must be a nonnegative integer no greater than one.
 
 ## Repository Model
 

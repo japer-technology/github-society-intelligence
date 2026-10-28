@@ -36,7 +36,7 @@
  * IDENTITY MODEL — CLOSED WORLD
  * ─────────────────────────────────────────────────────────────────────────────
  * Thread IDs are monotonic integers allocated by this tool, never by the user.
- * Allocation is atomic via `openSync(path, "wx")`; alias collisions are hard
+ * A registry lock serializes allocation and alias checks; alias collisions are hard
  * errors; `--thread <ref>` requires `<ref>` to resolve to an existing thread
  * (typos cannot fork phantom threads); pure-digit aliases are forbidden so an
  * integer reference and a name reference can never be confused.
@@ -44,20 +44,17 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * SESSION ATTRIBUTION
  * ─────────────────────────────────────────────────────────────────────────────
- * `pi` writes its session transcript into `state/sessions/` with a filename
- * it chooses itself.  Picking "the newest file" is racy when multiple runners
- * are active concurrently.  Each turn instead snapshots the directory before
- * spawning `pi`, then attributes the new entry by diff.  If no new file
- * appears we refuse to guess.
+ * Picking the newest file, even from a directory diff, is racy when multiple
+ * runners are active concurrently. Each turn passes an explicit, unique
+ * session filename under `state/sessions/` to `pi`.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * LOCAL-LLM SUPPORT
  * ─────────────────────────────────────────────────────────────────────────────
  * OpenAI-compatible local servers (LM Studio, Ollama, vLLM) are supported by
- * setting `LOCAL_LLM_BASE_URL`.  The runner forwards it into `OPENAI_BASE_URL`
- * and injects a placeholder `OPENAI_API_KEY=local` so the SDK does not reject
- * the request.  `lmstudio` is recognised as a first-class provider value and
- * exempt from the cloud-provider API-key check.
+ * setting `LOCAL_LLM_BASE_URL`. The runner registers the endpoint and model
+ * through a pi extension using Chat Completions, and supplies a placeholder
+ * key when none is set. Local brands are exempt from the cloud-key check.
  *
  * Precedence for provider/model: `LOCAL_*` env vars > `.pi/settings.json` >
  * built-in defaults.
@@ -88,14 +85,16 @@
 import {
   existsSync, readFileSync, writeFileSync, appendFileSync,
   mkdirSync, readdirSync, statSync, unlinkSync, renameSync,
-  openSync, closeSync,
+  openSync, closeSync, realpathSync,
 } from "fs";
-import { resolve, join, basename } from "path";
-import { createInterface } from "readline";
+import { resolve, join, basename, relative, isAbsolute, sep } from "path";
+import { randomUUID } from "crypto";
+import { createInterface, type Interface } from "readline";
 import { execFileSync, execSync } from "child_process";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import ansiRegex from "ansi-regex";
+import { extractFinalAssistantText, sessionMessages } from "./pi-output.ts";
 
 // marked-terminal's return type does not perfectly align with marked's
 // MarkedExtension interface; the cast is the standard workaround.
@@ -111,15 +110,9 @@ const piSettingsPath = resolve(societyIntelligenceDir, ".pi", "settings.json");
 const memoryLogPath = resolve(societyIntelligenceDir, "memory.log");
 const lastRunRawPath = resolve(stateDir, "local-last-run.jsonl");
 
-// Repo-root-relative session dir, matching agent.ts.
-const sessionsDirRelative = ".github-society-intelligence/state/sessions";
-
 // Alias grammar: starts with a letter; letters/digits/"_"/"-" only; max 64.
 // Forbidding pure-digit names prevents ambiguity with integer IDs.
 const ALIAS_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
-
-// Cap for the atomic-allocation retry loop; defensive only.
-const MAX_ALLOC_ATTEMPTS = 1000;
 
 // Mapping of pi-mono provider IDs to required environment variable names.
 // `lmstudio` and any `openai` setup pointed at LOCAL_LLM_BASE_URL are exempt
@@ -162,6 +155,12 @@ function localBrandLabel(userProvider: string): string | null {
     return "openai-compatible";
   }
   return null;
+}
+
+function localEndpoint(provider: string): string | undefined {
+  if (provider !== "openai" && !LOCAL_PROVIDERS.has(provider)) return undefined;
+  return process.env.LOCAL_LLM_BASE_URL || process.env.OPENAI_BASE_URL ||
+    LOCAL_BRAND_DEFAULTS[provider]?.baseUrl;
 }
 
 // ─── Output styling ───────────────────────────────────────────────────────────
@@ -259,15 +258,43 @@ function threadPath(id: number): string {
 function readThread(id: number): Thread | null {
   const p = threadPath(id);
   if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf-8")) as Thread;
-  } catch {
-    return null;
+  const thread: Thread = JSON.parse(readFileSync(p, "utf-8"));
+  if (thread.id !== id || (thread.name !== null && !ALIAS_PATTERN.test(thread.name)) ||
+      (thread.sessionPath !== null && typeof thread.sessionPath !== "string") ||
+      typeof thread.createdAt !== "string" || typeof thread.updatedAt !== "string") {
+    throw new Error(`Invalid thread record: ${p}`);
   }
+  return thread;
 }
 
 function writeThread(t: Thread): void {
-  writeFileSync(threadPath(t.id), JSON.stringify(t, null, 2) + "\n");
+  const tempPath = `${threadPath(t.id)}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tempPath, JSON.stringify(t, null, 2) + "\n");
+    renameSync(tempPath, threadPath(t.id));
+  } finally {
+    if (existsSync(tempPath)) unlinkSync(tempPath);
+  }
+}
+
+function withRegistryLock<T>(action: () => T): T {
+  mkdirSync(threadsDir, { recursive: true });
+  const lockPath = join(threadsDir, ".registry.lock");
+  let fd: number;
+  try {
+    fd = openSync(lockPath, "wx");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error("Thread registry is busy. Retry after the other operation finishes.");
+    }
+    throw err;
+  }
+  try {
+    return action();
+  } finally {
+    closeSync(fd);
+    unlinkSync(lockPath);
+  }
 }
 
 function listThreads(): Thread[] {
@@ -289,6 +316,10 @@ function listThreads(): Thread[] {
  * See file header "IDENTITY MODEL — CLOSED WORLD" for the design rationale.
  */
 function allocateThread(name: string | null): Thread {
+  return withRegistryLock(() => allocateThreadLocked(name));
+}
+
+function allocateThreadLocked(name: string | null): Thread {
   if (name !== null) {
     if (!ALIAS_PATTERN.test(name)) {
       throw new Error(
@@ -310,28 +341,18 @@ function allocateThread(name: string | null): Thread {
   const existingIds = readdirSync(threadsDir)
     .filter((f) => /^\d+\.json$/.test(f))
     .map((f) => parseInt(f, 10));
-  let candidate = (existingIds.length === 0 ? 0 : Math.max(...existingIds)) + 1;
-
-  for (let attempt = 0; attempt < MAX_ALLOC_ATTEMPTS; attempt++) {
-    const p = threadPath(candidate);
-    try {
-      const fd = openSync(p, "wx");
-      closeSync(fd);
-      const now = new Date().toISOString();
-      const t: Thread = {
-        id: candidate, name, sessionPath: null,
-        createdAt: now, updatedAt: now,
-      };
-      writeThread(t);
-      return t;
-    } catch (err: any) {
-      if (err.code === "EEXIST") { candidate++; continue; }
-      throw err;
-    }
-  }
-  throw new Error(
-    `Could not allocate a thread ID after ${MAX_ALLOC_ATTEMPTS} attempts.`
-  );
+  const counterPath = join(threadsDir, ".last-id");
+  const lastId = existsSync(counterPath) ? Number(readFileSync(counterPath, "utf-8")) : 0;
+  if (!Number.isSafeInteger(lastId) || lastId < 0) throw new Error("Invalid thread ID counter.");
+  const candidate = existingIds.reduce((max, id) => Math.max(max, id), lastId) + 1;
+  if (!Number.isSafeInteger(candidate)) throw new Error("Thread IDs exhausted.");
+  const now = new Date().toISOString();
+  const thread: Thread = {
+    id: candidate, name, sessionPath: null, createdAt: now, updatedAt: now,
+  };
+  writeFileSync(counterPath, String(candidate));
+  writeThread(thread);
+  return thread;
 }
 
 function resolveThreadRef(ref: string): Thread | null {
@@ -342,79 +363,17 @@ function resolveThreadRef(ref: string): Thread | null {
   return null;
 }
 
-function snapshotSessionFiles(): Set<string> {
-  if (!existsSync(sessionsDir)) return new Set();
-  return new Set(readdirSync(sessionsDir).filter((f) => f.endsWith(".jsonl")));
-}
-
 // ─── pi JSONL parsing ─────────────────────────────────────────────────────────
 
-type PiBlock = { type?: string; text?: string };
-type PiEvent = { type?: string; message?: { role?: string; content?: PiBlock[] } };
-
-/**
- * Extract the final assistant text reply from a stream of pi JSONL events.
- * Mirrors the `tac | jq` pipeline in agent.ts: walk events in reverse and
- * return the text of the most recent `message_end` assistant event with at
- * least one text block.  Skips trailing tool-call-only events and
- * empty-content events caused by post-tool-call API errors.
- */
-function extractFinalAssistantText(jsonl: string): string {
-  const lines = jsonl.split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    let evt: PiEvent;
-    try { evt = JSON.parse(line) as PiEvent; } catch { continue; }
-    if (evt.type !== "message_end" || evt.message?.role !== "assistant") continue;
-    const blocks = (evt.message.content ?? []).filter((b) => b?.type === "text" && typeof b.text === "string");
-    if (blocks.length === 0) continue;
-    return blocks.map((b) => (b.text ?? "").trim()).filter((s) => s.length > 0).join("\n\n");
-  }
-  return "";
-}
-
-/** Count `message_end` events with role=user — i.e. user turns in a session. */
+/** Count persisted user messages, not the CLI's streaming events. */
 function countSessionTurns(filePath: string): number {
-  if (!existsSync(filePath)) return 0;
-  try {
-    const lines = readFileSync(filePath, "utf-8")
-      .split(/\r?\n/).filter((l) => l.trim().length > 0);
-    let turns = 0;
-    for (const line of lines) {
-      try {
-        const evt = JSON.parse(line) as PiEvent;
-        if (evt.type === "message_end" && evt.message?.role === "user") turns++;
-      } catch {}
-    }
-    return turns;
-  } catch { return 0; }
+  return getSessionHistory(filePath).filter((message) => message.role === "user").length;
 }
 
-/** Condensed per-turn preview list for /history and /export. */
-function getSessionHistory(filePath: string): Array<{ role: string; preview: string }> {
+/** Preserve complete text for exports; only /history truncates previews. */
+function getSessionHistory(filePath: string): Array<{ role: string; text: string }> {
   if (!existsSync(filePath)) return [];
-  try {
-    const lines = readFileSync(filePath, "utf-8")
-      .split(/\r?\n/).filter((l) => l.trim().length > 0);
-    const out: Array<{ role: string; preview: string }> = [];
-    for (const line of lines) {
-      try {
-        const evt = JSON.parse(line) as PiEvent;
-        if (evt.type !== "message_end") continue;
-        const role = evt.message?.role;
-        if (role !== "user" && role !== "assistant") continue;
-        const text = (evt.message?.content ?? [])
-          .filter((b) => b.type === "text" && typeof b.text === "string")
-          .map((b) => (b.text ?? "").trim())
-          .filter((t) => t.length > 0)
-          .join(" ").replace(/\s+/g, " ");
-        if (!text) continue;
-        out.push({ role, preview: text.length > 80 ? text.slice(0, 77) + "..." : text });
-      } catch {}
-    }
-    return out;
-  } catch { return []; }
+  return sessionMessages(readFileSync(filePath, "utf-8"));
 }
 
 // ─── Formatting / display helpers ─────────────────────────────────────────────
@@ -475,19 +434,30 @@ function createSpinner(message: string): { stop: (finalMessage?: string) => void
   };
 }
 
+function askLine(rl: Interface, question: string): Promise<string | null> {
+  return new Promise((resolveAnswer) => {
+    const onClose = () => resolveAnswer(null);
+    rl.once("close", onClose);
+    rl.question(question, (answer) => {
+      rl.off("close", onClose);
+      resolveAnswer(answer);
+    });
+  });
+}
+
 // ─── Git / repo helpers (best-effort, never throw out) ────────────────────────
 
 function getGitBranch(): string | null {
   try {
     return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"],
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim() || null;
+      { cwd: getRepoRoot(), encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim() || null;
   } catch { return null; }
 }
 
 function getRepoRoot(): string {
   try {
     return execFileSync("git", ["rev-parse", "--show-toplevel"],
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+      { cwd: societyIntelligenceDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
   } catch {
     return resolve(societyIntelligenceDir, "..");
   }
@@ -499,10 +469,12 @@ function getRepoName(): string {
 
 /** Resolve a user-supplied path, rejecting anything outside the repo root. */
 function safePath(userPath: string): string | null {
-  const root = getRepoRoot();
+  const root = realpathSync(getRepoRoot());
   const resolved = resolve(root, userPath);
-  if (!resolved.startsWith(root)) return null;
-  return resolved;
+  const target = existsSync(resolved) ? realpathSync(resolved) : resolved;
+  const rel = relative(root, target);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  return target;
 }
 
 // ─── Memory log helpers ───────────────────────────────────────────────────────
@@ -532,19 +504,34 @@ function parseArgs(argv: string[]): CliArgs {
     list: false, rmRef: null, prompt: "",
   };
   const promptParts: string[] = [];
+  function value(index: number, flag: string): string {
+    const result = argv[index];
+    if (!result || result.startsWith("-")) throw new Error(`${flag} requires a value.`);
+    return result;
+  }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
-      case "--thread": case "-t": out.threadRef = argv[++i] ?? null; break;
+      case "--thread": case "-t": out.threadRef = value(++i, a); break;
       case "--new": out.newThread = true; break;
-      case "--name": out.newName = argv[++i] ?? null; break;
+      case "--name": out.newName = value(++i, a); break;
       case "--list": case "-l": out.list = true; break;
-      case "--rm": out.rmRef = argv[++i] ?? null; break;
+      case "--rm": out.rmRef = value(++i, a); break;
+      case "-p": case "--prompt": promptParts.push(value(++i, a)); break;
+      case "--": promptParts.push(...argv.slice(i + 1)); i = argv.length; break;
       case "--help": case "-h": printCliHelp(); process.exit(0);
-      default: promptParts.push(a);
+      default:
+        if (a.startsWith("-")) throw new Error(`Unknown option "${a}".`);
+        promptParts.push(a);
     }
   }
   out.prompt = promptParts.join(" ").trim();
+  if ([out.newThread, out.threadRef !== null, out.list, out.rmRef !== null].filter(Boolean).length > 1) {
+    throw new Error("Choose only one of --new, --thread, --list, or --rm.");
+  }
+  if (out.newName !== null && !out.newThread) throw new Error("--name requires --new.");
+  if (out.newName !== null && !ALIAS_PATTERN.test(out.newName)) throw new Error("Invalid thread name.");
+  if (out.prompt && (out.list || out.rmRef !== null)) throw new Error("This command does not accept a prompt.");
   return out;
 }
 
@@ -554,7 +541,7 @@ function printCliHelp(): void {
 
 Usage:
   bun run chat                                   Interactive launcher (pick or create).
-  bun run chat --new [--name <alias>]            Create a new thread and enter REPL.
+  bun run chat --new [--name <alias>] [prompt]   Create a thread; print ID if no prompt.
   bun run chat --thread <id|alias> [prompt...]   Continue a thread; REPL if no prompt.
   bun run chat --list                            List all threads.
   bun run chat --rm <id|alias>                   Delete a thread mapping.
@@ -565,7 +552,7 @@ Environment overrides (highest precedence):
   LOCAL_MODEL         Override defaultModel.
   LOCAL_THINKING      Override defaultThinkingLevel  (e.g. low, medium, high).
   LOCAL_LLM_BASE_URL  OpenAI-compatible base URL (LM Studio, Ollama, vLLM).
-                      Forwarded to OPENAI_BASE_URL with a placeholder API key.
+                      Registered with pi using Chat Completions and a placeholder key.
 
 Closed-world identity: thread IDs are allocated by this tool; unknown refs are
 rejected (no auto-create on typos). Aliases must start with a letter.`
@@ -638,10 +625,12 @@ async function interactiveStart(provider: string, model: string, thinking: strin
   console.log("");
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res));
+  const ask = (q: string) => askLine(rl, q);
   try {
     while (true) {
-      const raw = (await ask("    Select> ")).trim();
+      const answer = await ask("    Select> ");
+      if (answer === null) return null;
+      const raw = answer.trim();
       if (raw === "q" || raw === "Q" || raw === "/exit" || raw === "/quit") {
         return null;
       }
@@ -655,7 +644,7 @@ async function interactiveStart(provider: string, model: string, thinking: strin
         console.log(`    Resuming thread #${t.id}${t.name ? ` ("${t.name}")` : ""}.\n`);
         return t;
       }
-      const n = parseInt(raw, 10);
+      const n = Number(raw);
       if (Number.isInteger(n) && n >= 1 && n <= sorted.length) {
         const t = sorted[n - 1];
         console.log(`    Resuming thread #${t.id}${t.name ? ` ("${t.name}")` : ""}.\n`);
@@ -684,14 +673,12 @@ type PiSettings = {
 
 function loadPiSettings(): PiSettings {
   if (!existsSync(piSettingsPath)) return {};
-  try { return JSON.parse(readFileSync(piSettingsPath, "utf-8")) as PiSettings; }
-  catch { return {}; }
+  return JSON.parse(readFileSync(piSettingsPath, "utf-8")) as PiSettings;
 }
 
 /**
  * Resolve final provider/model/thinking by applying env overrides on top of
- * settings, validate the result, and (for OpenAI-compatible local servers)
- * forward `LOCAL_LLM_BASE_URL` into `OPENAI_BASE_URL` with a placeholder key.
+ * settings and validate the result. Local endpoints are resolved per turn.
  */
 function resolveRuntimeConfig(): { provider: string; model: string; thinking: string | undefined } {
   const settings = loadPiSettings();
@@ -699,7 +686,9 @@ function resolveRuntimeConfig(): { provider: string; model: string; thinking: st
   const model = process.env.LOCAL_MODEL ?? settings.defaultModel ?? "";
   const thinking = process.env.LOCAL_THINKING ?? settings.defaultThinkingLevel;
 
-  if (!provider || !model) {
+  if (typeof provider !== "string" || !provider || /\s/.test(provider) ||
+      typeof model !== "string" || !model ||
+      (thinking !== undefined && typeof thinking !== "string")) {
     throw new Error(
       `Invalid .pi settings at ${piSettingsPath}: ` +
       `expected defaultProvider and defaultModel (or LOCAL_PROVIDER / LOCAL_MODEL).`
@@ -711,32 +700,12 @@ function resolveRuntimeConfig(): { provider: string; model: string; thinking: st
     );
   }
 
-  // OpenAI-compatible local server wiring.
-  // For brand providers (lmstudio/ollama/vllm) auto-fill a default base URL
-  // if the user did not set LOCAL_LLM_BASE_URL/OPENAI_BASE_URL explicitly.
-  if (provider === "openai" || LOCAL_PROVIDERS.has(provider)) {
-    const brandDefault = LOCAL_BRAND_DEFAULTS[provider]?.baseUrl;
-    if (brandDefault && !process.env.LOCAL_LLM_BASE_URL && !process.env.OPENAI_BASE_URL) {
-      process.env.LOCAL_LLM_BASE_URL = brandDefault;
-    }
-    if (process.env.LOCAL_LLM_BASE_URL && !process.env.OPENAI_BASE_URL) {
-      process.env.OPENAI_BASE_URL = process.env.LOCAL_LLM_BASE_URL;
-    }
-    if ((process.env.LOCAL_LLM_BASE_URL || process.env.OPENAI_BASE_URL) && !process.env.OPENAI_API_KEY) {
-      // OpenAI-compatible local servers often ignore the key, but the SDK
-      // refuses to send a request without one.  A literal "local" satisfies it.
-      process.env.OPENAI_API_KEY = "local";
-    }
-  }
-
   return { provider, model, thinking };
 }
 
 /** True when this provider+env combination targets a local model server. */
 function isLocalProvider(provider: string): boolean {
-  if (LOCAL_PROVIDERS.has(provider)) return true;
-  if (provider === "openai" && (process.env.LOCAL_LLM_BASE_URL || process.env.OPENAI_BASE_URL)) return true;
-  return false;
+  return Boolean(localEndpoint(provider));
 }
 
 // ─── pi binary location ───────────────────────────────────────────────────────
@@ -799,16 +768,15 @@ type RuntimeState = {
  *
  * Pipeline:
  *   1. Build argv mirroring agent.ts, adding `--session <path>` when resuming.
- *   2. Snapshot the sessions directory.
+ *   2. Choose an explicit session filename.
  *   3. Spawn pi from the repo root (matching agent.ts cwd).
  *   4. Buffer stdout for in-process JSONL parsing.
  *   5. Extract the final assistant text.
- *   6. Attribute the new transcript via pre/post directory diff.
+ *   6. Persist that exact transcript path.
  *
  * Auto-retries (when enabled) on non-zero exit codes and on turns that
- * produced no assistant text.  Each retry attribution diff is taken against
- * the *original* pre-turn snapshot so the chosen session file is always one
- * created by this invocation.
+ * produced no assistant text. Retries use the same session path, never a
+ * concurrently created transcript from another thread.
  */
 async function runTurn(
   t: Thread,
@@ -818,7 +786,9 @@ async function runTurn(
 ): Promise<{ thread: Thread; reply: string; rawJsonl: string }> {
   const maxAttempts = rt.autoRetry ? rt.autoRetryMax : 1;
   const repoRoot = getRepoRoot();
-  const before = snapshotSessionFiles();
+  const sessionPath = t.sessionPath && existsSync(t.sessionPath)
+    ? t.sessionPath
+    : join(sessionsDir, `${randomUUID()}.jsonl`);
   let lastErr: Error | null = null;
   let rawJsonl = "";
 
@@ -835,26 +805,35 @@ async function runTurn(
     // the user; the wire-format is always openai-compatible.
     const piProvider = resolvePiProvider(rt.provider);
     const localMode = isLocalProvider(rt.provider);
+    const endpoint = localEndpoint(rt.provider);
     const args: string[] = [
       "--mode", "json",
       "--tools", "read,bash,edit,write,grep,find,ls",
       "--provider", piProvider,
       "--model", rt.model,
       ...(rt.thinking ? ["--thinking", rt.thinking] : []),
-      "--session-dir", sessionsDirRelative,
+      "--session-dir", sessionsDir,
+      "--session", sessionPath,
+      "--append-system-prompt", resolve(societyIntelligenceDir, "AGENTS.md"),
+      ...(localMode ? ["--extension", resolve(import.meta.dir, "local-provider.ts")] : []),
       // Local OpenAI-compatible servers (LM Studio, Ollama, vLLM, ...) ignore
       // the key but the SDK requires one. Passing it explicitly via --api-key
       // also covers the case where the env var did not propagate to the child.
       ...(localMode ? ["--api-key", process.env.OPENAI_API_KEY || "local"] : []),
       "-p", prompt,
     ];
-    if (t.sessionPath && existsSync(t.sessionPath)) {
-      args.push("--session", t.sessionPath);
-    }
-
     try {
       const proc = Bun.spawn([rt.piBin, ...args], {
         cwd: repoRoot,
+        env: {
+          ...process.env,
+          PI_CODING_AGENT_DIR: resolve(societyIntelligenceDir, ".pi"),
+          ...(localMode ? {
+            GSI_LOCAL_BASE_URL: endpoint,
+            GSI_LOCAL_MODEL: rt.model,
+            OPENAI_API_KEY: process.env.OPENAI_API_KEY || "local",
+          } : {}),
+        },
         stdout: "pipe",
         stderr: "inherit",
       });
@@ -865,7 +844,7 @@ async function runTurn(
       spinner?.stop();
 
       // Always save the raw stream for post-mortem debugging.
-      try { writeFileSync(lastRunRawPath, rawJsonl); } catch {}
+      writeFileSync(lastRunRawPath, rawJsonl);
 
       if (rt.verbose) {
         const events = rawJsonl.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
@@ -891,33 +870,24 @@ async function runTurn(
           console.log("  " + c.yellow(`⟳ Retry ${attempt + 1}/${maxAttempts} after empty reply…`));
           continue;
         }
-        // Fall through with empty reply rather than throwing: the agent may
-        // have legitimately performed file edits without a text reply.
+        throw lastErr;
       }
 
       if (attempt > 1 && reply) {
         console.log("  " + c.green(`✓ Got response on attempt ${attempt}/${maxAttempts}`));
       }
 
-      // Attribute the session file.
-      let sessionPath = t.sessionPath;
-      if (!sessionPath || !existsSync(sessionPath)) {
-        const after = snapshotSessionFiles();
-        const created = [...after].filter((f) => !before.has(f));
-        if (created.length === 0) {
-          throw new Error(
-            "pi did not create a session file for this turn — refusing to guess " +
-            "and risk binding the wrong session to this thread."
-          );
-        }
-        created.sort((a, b) =>
-          statSync(join(sessionsDir, b)).mtimeMs - statSync(join(sessionsDir, a)).mtimeMs
-        );
-        sessionPath = join(sessionsDir, created[0]);
+      if (!existsSync(sessionPath)) {
+        throw new Error("pi did not write the requested session file.");
       }
 
-      const updated: Thread = { ...t, sessionPath, updatedAt: new Date().toISOString() };
-      writeThread(updated);
+      const updated = withRegistryLock(() => {
+        const current = readThread(t.id);
+        if (!current) throw new Error(`Thread #${t.id} was removed during this turn.`);
+        const updated: Thread = { ...current, sessionPath, updatedAt: new Date().toISOString() };
+        writeThread(updated);
+        return updated;
+      });
       return { thread: updated, reply, rawJsonl };
     } catch (err) {
       spinner?.stop();
@@ -1030,8 +1000,8 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
     `  ${c.dim("Provider:")} ${c.bold(rt.provider)}${brand ? c.dim(` (${brand})`) : ""} ${c.dim("|")} ${c.dim("Model:")} ${c.bold(rt.model)}` +
     `${rt.thinking ? ` ${c.dim("|")} ${c.dim("Thinking:")} ${rt.thinking}` : ""}`
   );
-  if (brand && process.env.OPENAI_BASE_URL) {
-    console.log(`  ${c.dim("Endpoint:")} ${c.bold(process.env.OPENAI_BASE_URL)}`);
+  if (brand && localEndpoint(rt.provider)) {
+    console.log(`  ${c.dim("Endpoint:")} ${c.bold(localEndpoint(rt.provider)!)}`);
   }
   console.log(`  ${c.dim("Thread:")}   ${c.bold("#" + current.id)}${current.name ? c.dim(` ("${current.name}")`) : ""} ${c.dim("— " + sessionStatus)}`);
   const memCount = getMemoryCount();
@@ -1052,7 +1022,7 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
   console.log("");
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res));
+  const ask = (q: string) => askLine(rl, q);
 
   function prompt(): string {
     const branch = getGitBranch();
@@ -1083,7 +1053,9 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
   try {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const line = (await ask(prompt())).trim();
+      const answer = await ask(prompt());
+      if (answer === null) break;
+      const line = answer.trim();
       if (!line) continue;
 
       // ─── Exit ─────────────────────────────────────────────────────────────
@@ -1127,14 +1099,17 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
           console.log("\n  " + c.yellow("! ") + `Invalid name "${newName}". Use letters/digits/_/- (starts with a letter).\n`);
           continue;
         }
-        const clash = listThreads().find((x) => x.name === newName && x.id !== current.id);
-        if (clash) {
-          console.log("\n  " + c.yellow("! ") + `Name "${newName}" already taken by thread #${clash.id}.\n`);
-          continue;
+        try {
+          withRegistryLock(() => {
+            const clash = listThreads().find((x) => x.name === newName && x.id !== current.id);
+            if (clash) throw new Error(`Name "${newName}" already taken by thread #${clash.id}.`);
+            current = { ...current, name: newName, updatedAt: new Date().toISOString() };
+            writeThread(current);
+          });
+          console.log(`\n  Thread #${current.id} renamed to "${newName}".\n`);
+        } catch (err) {
+          say.error("Could not rename thread", (err as Error).message);
         }
-        current = { ...current, name: newName, updatedAt: new Date().toISOString() };
-        writeThread(current);
-        console.log(`\n  Thread #${current.id} renamed to "${newName}".\n`);
         continue;
       }
 
@@ -1147,7 +1122,8 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
         for (const e of h) {
           if (e.role === "user") n++;
           const label = e.role === "user" ? `  [${n}] You:` : "       AI:";
-          console.log(`${label} ${e.preview}`);
+          const preview = e.text.replace(/\s+/g, " ");
+          console.log(`${label} ${preview.length > 80 ? preview.slice(0, 77) + "..." : preview}`);
         }
         console.log("");
         continue;
@@ -1168,8 +1144,8 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
         ];
         let n = 0;
         for (const e of h) {
-          if (e.role === "user") { n++; md.push(`## Turn ${n}`, ``, `**You:** ${e.preview}`, ``); }
-          else { md.push(`**AI:** ${e.preview}`, ``); }
+          if (e.role === "user") { n++; md.push(`## Turn ${n}`, ``, `**You:** ${e.text}`, ``); }
+          else { md.push(`**AI:** ${e.text}`, ``); }
         }
         try { writeFileSync(outPath, md.join("\n")); console.log(`\n  Exported to: ${outPath}\n`); }
         catch (err) { console.log("\n  " + c.red("× ") + (err as Error).message + "\n"); }
@@ -1198,8 +1174,8 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
         console.log(`    Verbose:     ${rt.verbose ? "on" : "off"}`);
         console.log(`    Auto-retry:  ${rt.autoRetry ? `on (max ${rt.autoRetryMax})` : "off"}`);
         console.log(`    Uptime:      ${formatDuration(Date.now() - startTime)}`);
-        if (process.env.OPENAI_BASE_URL) {
-          console.log(`    OPENAI_BASE_URL: ${process.env.OPENAI_BASE_URL}`);
+        if (localEndpoint(rt.provider)) {
+          console.log(`    Endpoint:    ${localEndpoint(rt.provider)}`);
         }
         console.log("");
         continue;
@@ -1218,17 +1194,11 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
           const idx = newModel.indexOf(":");
           const newProv = newModel.slice(0, idx);
           const newId   = newModel.slice(idx + 1);
+          if (!newId) { say.warn("Model ID must not be empty."); continue; }
           const oldProv = rt.provider, oldModel = rt.model;
           rt.provider = newProv;
           rt.model = newId;
-          // Re-wire env for newly-selected local brand if needed.
           if (LOCAL_PROVIDERS.has(newProv)) {
-            const def = LOCAL_BRAND_DEFAULTS[newProv];
-            if (def && !process.env.OPENAI_BASE_URL) {
-              process.env.OPENAI_BASE_URL = def.baseUrl;
-              process.env.LOCAL_LLM_BASE_URL = def.baseUrl;
-            }
-            if (!process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = "local";
             rt.autoRetry = true;
           }
           console.log(`\n  Switched: ${oldProv}:${oldModel} → ${rt.provider}:${rt.model}\n`);
@@ -1251,15 +1221,10 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
             `\n  Known local brands: lmstudio, ollama, vllm` +
             `\n  Cloud examples:    openai, anthropic, google, xai, openrouter\n`);
         } else {
+          if (/\s/.test(arg)) { say.warn("Provider IDs must not contain whitespace."); continue; }
           const oldProv = rt.provider;
           rt.provider = arg;
           if (LOCAL_PROVIDERS.has(arg)) {
-            const def = LOCAL_BRAND_DEFAULTS[arg];
-            if (def && !process.env.OPENAI_BASE_URL) {
-              process.env.OPENAI_BASE_URL = def.baseUrl;
-              process.env.LOCAL_LLM_BASE_URL = def.baseUrl;
-            }
-            if (!process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = "local";
             rt.autoRetry = true;
           }
           console.log(`\n  Provider: ${oldProv} → ${rt.provider}` +
@@ -1290,8 +1255,8 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
           rt.autoRetry = true;
           console.log(`\n  Auto-retry: on (max ${rt.autoRetryMax})\n`);
         } else if (arg) {
-          const n = parseInt(arg, 10);
-          if (n >= 1 && n <= 10) {
+          const n = Number(arg);
+          if (Number.isInteger(n) && n >= 1 && n <= 10) {
             rt.autoRetry = true; rt.autoRetryMax = n;
             console.log(`\n  Auto-retry: on (max ${n})\n`);
           } else {
@@ -1376,7 +1341,7 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
         console.log("");
         try {
           const status = execFileSync("git", ["status", "--short"],
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+            { cwd: getRepoRoot(), encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
           if (status.trim()) {
             console.log("  Changes:");
             for (const s of status.trimEnd().split("\n")) console.log(`    ${s}`);
@@ -1384,7 +1349,7 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
             console.log("  Working tree clean.");
           }
           const diffStat = execFileSync("git", ["diff", "--stat"],
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+            { cwd: getRepoRoot(), encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
           if (diffStat.trim()) {
             console.log("");
             for (const s of diffStat.trimEnd().split("\n")) console.log(`    ${s}`);
@@ -1399,7 +1364,7 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
         console.log("");
         try {
           const out = execFileSync("git", args,
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+            { cwd: getRepoRoot(), encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
           if (out.trim()) process.stdout.write(out);
           else console.log("  No differences.");
         } catch (err) { console.log("  " + c.red("× ") + (err as Error).message); }
@@ -1414,6 +1379,7 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
         console.log("");
         try {
           const out = execSync(cmd, {
+            cwd: getRepoRoot(),
             encoding: "utf-8", timeout: 30_000,
             stdio: ["pipe", "pipe", "pipe"],
           });
@@ -1448,8 +1414,8 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
         continue;
       }
       if (line === "/best-of" || line.startsWith("/best-of ")) {
-        const n = parseInt(line.slice("/best-of".length).trim(), 10);
-        if (!n || n < 2 || n > 10) {
+        const n = Number(line.slice("/best-of".length).trim());
+        if (!Number.isInteger(n) || n < 2 || n > 10) {
           console.log("\n  Usage: /best-of <n>  (n = 2–10)\n"); continue;
         }
         if (!lastPrompt) { console.log("\n  No previous prompt to retry.\n"); continue; }
@@ -1485,6 +1451,7 @@ async function repl(initial: Thread, rt: RuntimeState): Promise<void> {
         // eslint-disable-next-line no-constant-condition
         while (true) {
           const more = await ask("  ... ");
+          if (more === null) return;
           if (more.trim() === "") break;
           lines.push(more);
         }
@@ -1524,9 +1491,7 @@ type RuntimeCfg = { provider: string; model: string; thinking: string | undefine
 async function promptLine(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   try {
-    return await new Promise<string>((res) => {
-      rl.question(question, (a: string) => res(a ?? ""));
-    });
+    return (await askLine(rl, question)) ?? "";
   } catch {
     return "";
   } finally {
@@ -1650,7 +1615,14 @@ function guidePiNotInstalled(triedPaths: string[]): void {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  let args: CliArgs;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    say.error("Invalid arguments", (err as Error).message);
+    process.exitCode = 2;
+    return;
+  }
 
   mkdirSync(threadsDir, { recursive: true });
   mkdirSync(sessionsDir, { recursive: true });
@@ -1659,6 +1631,26 @@ async function main(): Promise<void> {
   if (args.list) { cmdList(); return; }
   if (args.rmRef !== null) { cmdRemove(args.rmRef); return; }
 
+  let activeThread: Thread | null = null;
+  if (args.threadRef) {
+    activeThread = resolveThreadRef(args.threadRef);
+    if (!activeThread) {
+      say.warn(`Unknown thread "${args.threadRef}".`, "Use --list or --new.");
+      process.exitCode = 2;
+      return;
+    }
+  }
+  if (args.newThread && !args.prompt) {
+    try {
+      const thread = allocateThread(args.newName);
+      say.ok(`Created thread #${thread.id}${thread.name ? ` ("${thread.name}")` : ""}.`);
+    } catch (err) {
+      say.error("Could not create thread", (err as Error).message);
+      process.exitCode = 2;
+    }
+    return;
+  }
+
   let cfg: RuntimeCfg = resolveRuntimeConfig();
 
   // ── Validate config BEFORE creating threads ─────────────────────────────
@@ -1666,6 +1658,7 @@ async function main(): Promise<void> {
   if (!isLocalProvider(cfg.provider)) {
     const keyName = PROVIDER_KEY_MAP[cfg.provider];
     if (keyName && !process.env[keyName]) {
+      if (!process.stdin.isTTY) throw new Error(`Missing API key: ${keyName}`);
       const updated = await guideMissingApiKey(cfg);
       if (!updated) { console.log("  " + c.dim("Goodbye.")); return; }
       cfg = updated;
@@ -1682,13 +1675,19 @@ async function main(): Promise<void> {
     const m = msg.match(/not found in any of: ([^\n]+)/);
     const candidates = m ? m[1].split(", ") : [];
     guidePiNotInstalled(candidates);
+    process.exitCode = 1;
     return;
   }
 
   // ── Resolve / create the active thread ──────────────────────────────────
-  let activeThread: Thread | null = null;
   if (args.newThread) {
-    activeThread = allocateThread(args.newName);
+    try {
+      activeThread = allocateThread(args.newName);
+    } catch (err) {
+      say.error("Could not create thread", (err as Error).message);
+      process.exitCode = 2;
+      return;
+    }
     say.ok(
       `Created thread #${activeThread.id}` +
       `${activeThread.name ? ` ("${activeThread.name}")` : ""}.`
@@ -1707,6 +1706,7 @@ async function main(): Promise<void> {
           "Use `--list` to see existing threads, or `--new` to create one. " +
           "Closed-world: unknown refs are never auto-created."
         );
+        process.exitCode = 2;
         return;
       }
     }
@@ -1730,6 +1730,7 @@ async function main(): Promise<void> {
       console.log(renderMarkdown(reply || "(no text reply produced)"));
     } catch (err) {
       say.error("Turn failed", (err as Error).message);
+      process.exitCode = 1;
     }
     return;
   }
@@ -1737,5 +1738,7 @@ async function main(): Promise<void> {
   await repl(activeThread, rt);
 }
 
-main();
-
+main().catch((err) => {
+  say.error("Local chat failed", err instanceof Error ? err.message : String(err));
+  process.exitCode = 1;
+});

@@ -16,14 +16,20 @@ export interface DispatchResult {
   settlementId: string;
 }
 
-const SETTLEMENT_RE = /stl-\d{4}-\d{2}-\d{2}-\d{3}/;
+const SETTLEMENT_RE = /(?:^|\/)(stl-\d{4}-\d{2}-\d{2}-\d{3})(?:\/|$)/;
 
 function extractSettlementId(input: DispatchInput): string {
-  if (input.settlementIdInput?.trim()) return input.settlementIdInput.trim();
+  const explicit = input.settlementIdInput?.trim();
+  if (explicit) {
+    if (!/^stl-\d{4}-\d{2}-\d{2}-\d{3}$/.test(explicit)) {
+      throw new Error("Invalid settlement ID; expected stl-YYYY-MM-DD-NNN.");
+    }
+    return explicit;
+  }
   const refs = [input.headRef, input.refName].filter(Boolean) as string[];
   for (const ref of refs) {
     const match = ref.match(SETTLEMENT_RE);
-    if (match) return match[0];
+    if (match) return match[1];
   }
   return "";
 }

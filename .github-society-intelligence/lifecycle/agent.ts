@@ -28,9 +28,8 @@
  *   3. Build a prompt string from the event payload.
  *   4. Run the `pi` coding agent binary with the prompt (+ prior session if resuming).
  *      Agent output is streamed through `tee` to provide a live Actions log AND
- *      persist the raw JSONL to `/tmp/agent-raw.jsonl` for post-processing.
- *   5. Extract the assistant's final text reply from the JSONL output using
- *      `tac` (reverse) + `jq` (parse the last `message_end` event).
+ *      persist a per-run raw JSONL file for post-processing.
+ *   5. Extract the assistant's final reply and detect provider errors.
  *   6. Persist the issue → session mapping so the next run can resume the conversation.
  *   7. Stage, commit, and push all changes (session log, mapping, repo edits)
  *      back to the default branch with an automatic retry-on-conflict loop.
@@ -55,8 +54,8 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Multiple agents may race to push to the same branch.  To handle this gracefully
  * the script retries a failed `git push` up to 10 times with increasing backoff
- * delays, pulling with `--rebase -X theirs` between attempts.  If all attempts
- * fail, the run throws a clear error.
+ * delays, pulling with `--rebase` between attempts. Conflicts stop the run
+ * rather than silently overwriting either side's changes.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * GITHUB COMMENT SIZE LIMIT
@@ -75,8 +74,11 @@
  * - Bun runtime                   — for Bun.spawn and top-level await
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { resolve } from "path";
+import { randomUUID } from "crypto";
+import { tmpdir } from "os";
+import { extractFinalAssistantText } from "./pi-output.ts";
 
 // ─── Paths and event context ───────────────────────────────────────────────────
 // `import.meta.dir` resolves to `.github-society-intelligence/lifecycle/`; stepping up one level
@@ -86,6 +88,9 @@ const stateDir = resolve(societyIntelligenceDir, "state");
 const issuesDir = resolve(stateDir, "issues");
 const sessionsDir = resolve(stateDir, "sessions");
 const piSettingsPath = resolve(societyIntelligenceDir, ".pi", "settings.json");
+const runnerTemp = process.env.RUNNER_TEMP ?? tmpdir();
+const reactionStatePath = resolve(runnerTemp, "reaction-state.json");
+const rawOutputPath = resolve(runnerTemp, `agent-${randomUUID()}.jsonl`);
 
 // The `pi` CLI requires a repo-root-relative path for `--session-dir`, not an
 // absolute one, so we keep this as a relative string constant.
@@ -118,28 +123,18 @@ const issueNumber: number = event.issue.number;
 // Read the committed `.pi` defaults and pass them explicitly to the runtime.
 // This prevents provider/model drift from host-level config (for example a
 // runner image with a global `~/.pi/settings.json` set to github-copilot).
-const piSettings = JSON.parse(readFileSync(piSettingsPath, "utf-8"));
-const configuredProvider: string = piSettings.defaultProvider;
-const configuredModel: string = piSettings.defaultModel;
-const configuredThinking: string | undefined = piSettings.defaultThinkingLevel;
-
-if (!configuredProvider || !configuredModel) {
-  throw new Error(
-    `Invalid .pi settings at ${piSettingsPath}: expected defaultProvider and defaultModel`
-  );
+function readPiConfig(): { provider: string; model: string; thinking?: string } {
+  const settings = JSON.parse(readFileSync(piSettingsPath, "utf-8"));
+  const provider = settings?.defaultProvider;
+  const model = settings?.defaultModel;
+  const thinking = settings?.defaultThinkingLevel;
+  if (typeof provider !== "string" || !provider || /\s/.test(provider) ||
+      typeof model !== "string" || !model || /\s/.test(model) ||
+      (thinking !== undefined && typeof thinking !== "string")) {
+    throw new Error(`Invalid .pi settings at ${piSettingsPath}: expected provider/model IDs without whitespace and an optional thinking level.`);
+  }
+  return { provider, model, thinking };
 }
-
-// Catch whitespace-only or obviously malformed model identifiers early so the
-// pi agent doesn't start up only to fail with an opaque API error.
-if (configuredModel.trim() !== configuredModel || /\s/.test(configuredModel)) {
-  throw new Error(
-    `Invalid model identifier "${configuredModel}" in ${piSettingsPath}: ` +
-    `model IDs must not contain whitespace. ` +
-    `Update the "defaultModel" field in .pi/settings.json to a valid model ID for the "${configuredProvider}" provider.`
-  );
-}
-
-console.log(`Configured provider: ${configuredProvider}, model: ${configuredModel}${configuredThinking ? `, thinking: ${configuredThinking}` : ""}`);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -175,19 +170,23 @@ async function gh(...args: string[]): Promise<string> {
   return stdout;
 }
 
+async function checkedRun(cmd: string[]): Promise<void> {
+  const result = await run(cmd);
+  if (result.exitCode !== 0) throw new Error(`${cmd.slice(0, 2).join(" ")} failed with exit code ${result.exitCode}`);
+}
 
 async function main() {
   // ─── Restore reaction state from Authorize step ─────────────────────
   // The Authorize step writes the 🚀 reaction metadata to
-  // `/tmp/reaction-state.json`.  We read it here so the `finally` block can
+  // `$RUNNER_TEMP/reaction-state.json`. We read it so the `finally` block can
   // add the outcome reaction (👍 or 👎) when the agent finishes.
   // If the file is absent (e.g., authorization was skipped), we default to null.
   let reactionState: any = null;
-  if (existsSync("/tmp/reaction-state.json")) {
+  if (existsSync(reactionStatePath)) {
     try {
-      reactionState = JSON.parse(readFileSync("/tmp/reaction-state.json", "utf-8"));
+      reactionState = JSON.parse(readFileSync(reactionStatePath, "utf-8"));
     } catch {
-      console.warn("Could not parse /tmp/reaction-state.json, skipping reaction state");
+      console.warn(`Could not parse ${reactionStatePath}, skipping reaction state`);
     }
   }
 
@@ -196,6 +195,8 @@ async function main() {
   let succeeded = false;
 
   try {
+    const { provider: configuredProvider, model: configuredModel, thinking: configuredThinking } = readPiConfig();
+    console.log(`Configured provider: ${configuredProvider}, model: ${configuredModel}${configuredThinking ? `, thinking: ${configuredThinking}` : ""}`);
     // ── Read issue title and body from the event payload ──────────────────────────
     // Use the webhook payload directly to avoid two `gh` API round-trips (~2–4 s).
     // GitHub truncates string fields at 65 536 characters in webhook payloads, so
@@ -213,7 +214,6 @@ async function main() {
     mkdirSync(issuesDir, { recursive: true });
     mkdirSync(sessionsDir, { recursive: true });
 
-    let mode = "new";
     let sessionPath = "";
     const mappingFile = resolve(issuesDir, `${issueNumber}.json`);
 
@@ -222,7 +222,6 @@ async function main() {
         const mapping = JSON.parse(readFileSync(mappingFile, "utf-8"));
         if (existsSync(mapping.sessionPath)) {
           // A prior session exists — resume it to preserve conversation context.
-          mode = "resume";
           sessionPath = mapping.sessionPath;
           console.log(`Found existing session: ${sessionPath}`);
         } else {
@@ -238,8 +237,8 @@ async function main() {
 
     // ── Configure git identity ───────────────────────────────────────────────────
     // Set the bot identity for all git commits made during this run.
-    await run(["git", "config", "user.name", "github-society-intelligence[bot]"]);
-    await run(["git", "config", "user.email", "github-society-intelligence[bot]@users.noreply.github.com"]);
+    await checkedRun(["git", "config", "user.name", "github-society-intelligence[bot]"]);
+    await checkedRun(["git", "config", "user.email", "github-society-intelligence[bot]@users.noreply.github.com"]);
 
     // ── Build prompt from event context ─────────────────────────────────────────
     // For `issue_comment` events, use the new comment body as the full prompt so
@@ -305,8 +304,9 @@ async function main() {
     // ── Run the pi agent ─────────────────────────────────────────────────────────
     // Pipe agent output through `tee` so we get:
     //   • a live stream to stdout (visible in the Actions log in real time), and
-    //   • a persisted copy at `/tmp/agent-raw.jsonl` for post-processing below.
+    //   • a per-run persisted copy for post-processing below.
     const piBin = resolve(societyIntelligenceDir, "node_modules", ".bin", "pi");
+    if (!sessionPath) sessionPath = `${sessionsDirRelative}/${randomUUID()}.jsonl`;
     const piArgs = [
       piBin,
       "--mode",
@@ -320,17 +320,18 @@ async function main() {
       ...(configuredThinking ? ["--thinking", configuredThinking] : []),
       "--session-dir",
       sessionsDirRelative,
+      "--session", sessionPath,
+      "--append-system-prompt", resolve(societyIntelligenceDir, "AGENTS.md"),
       "-p",
       prompt,
     ];
-    if (mode === "resume" && sessionPath) {
-      // Pass the prior session transcript so the agent can recall earlier context.
-      piArgs.push("--session", sessionPath);
-    }
-
-    const pi = Bun.spawn(piArgs, { stdout: "pipe", stderr: "inherit" });
-    const tee = Bun.spawn(["tee", "/tmp/agent-raw.jsonl"], { stdin: pi.stdout, stdout: "inherit" });
-    await tee.exited;
+    const pi = Bun.spawn(piArgs, {
+      stdout: "pipe",
+      stderr: "inherit",
+      env: { ...process.env, PI_CODING_AGENT_DIR: resolve(societyIntelligenceDir, ".pi") },
+    });
+    const tee = Bun.spawn(["tee", rawOutputPath], { stdin: pi.stdout, stdout: "inherit" });
+    const teeExitCode = await tee.exited;
 
     // Check if the pi agent exited successfully.
     const piExitCode = await pi.exited;
@@ -344,84 +345,64 @@ async function main() {
         `Check the workflow logs above for details.`
       );
     }
+    if (teeExitCode !== 0) throw new Error(`Could not capture pi output: tee exited ${teeExitCode}`);
 
     // ── Extract final assistant text ─────────────────────────────────────────────
-    // The `pi` agent writes newline-delimited JSON events.  We reverse the file
-    // with `tac` so the most recent events appear first in the `jq` array.  We
-    // then search for the most recent `message_end` where the role is `assistant`
-    // AND the content contains at least one `text` block.  This correctly handles
-    // cases where the final event has empty content (e.g., a 400 API error after
-    // a successful tool call) by falling back to an earlier assistant message.
-    const tac = Bun.spawn(["tac", "/tmp/agent-raw.jsonl"], { stdout: "pipe" });
-    const jq = Bun.spawn(
-      ["jq", "-r", "-s", '[ .[] | select(.type == "message_end" and .message.role == "assistant") | select((.message.content // []) | map(select(.type == "text")) | length > 0) ] | .[0].message.content[] | select(.type == "text") | .text'],
-      { stdin: tac.stdout, stdout: "pipe" }
-    );
-    const agentText = await new Response(jq.stdout).text();
-    await jq.exited;
-
-    // ── Determine latest session file ────────────────────────────────────────────
-    // After the agent run, the newest `.jsonl` file in the sessions directory is
-    // the session transcript that was just written (or extended).
-    const { stdout: latestSession } = await run([
-      "bash", "-c", `ls -t ${sessionsDirRelative}/*.jsonl 2>/dev/null | head -1`,
-    ]);
+    const agentText = extractFinalAssistantText(readFileSync(rawOutputPath, "utf-8"));
+    if (!agentText) throw new Error("pi produced no assistant text for this turn.");
 
     // ── Persist issue → session mapping ─────────────────────────────────────────
     // Write (or overwrite) the mapping file so that the next run for this issue
     // can locate the correct session transcript and resume the conversation.
-    if (latestSession) {
+    if (existsSync(sessionPath)) {
       writeFileSync(
         mappingFile,
         JSON.stringify({
           issueNumber,
-          sessionPath: latestSession,
+          sessionPath,
           updatedAt: new Date().toISOString(),
         }, null, 2) + "\n"
       );
-      console.log(`Saved mapping: issue #${issueNumber} -> ${latestSession}`);
+      console.log(`Saved mapping: issue #${issueNumber} -> ${sessionPath}`);
     } else {
-      console.log("Warning: no session file found to map");
+      throw new Error("pi did not write the requested session file.");
     }
 
     // ── Commit and push state changes ───────────────────────────────────────────
     // Stage all changes (session log, mapping JSON, any files the agent edited),
     // commit only if the index is dirty, then push with a retry-on-conflict loop.
-    const addResult = await run(["git", "add", "-A"]);
-    if (addResult.exitCode !== 0) {
-      console.error("git add failed with exit code", addResult.exitCode);
-    }
-    const { exitCode } = await run(["git", "diff", "--cached", "--quiet"]);
-    if (exitCode !== 0) {
-      // exitCode !== 0 means there are staged changes to commit.
-      const commitResult = await run(["git", "commit", "-m", `society-intelligence: work on issue #${issueNumber}`]);
-      if (commitResult.exitCode !== 0) {
-        console.error("git commit failed with exit code", commitResult.exitCode);
-      }
-    }
-
-    // Retry push up to 10 times with increasing backoff delays, rebasing on
-    // each conflict with `-X theirs` to auto-resolve in favour of the remote.
-    const pushBackoffs = [1000, 2000, 3000, 5000, 7000, 8000, 10000, 12000, 12000, 15000];
+    let persistenceError: Error | null = null;
     let pushSucceeded = false;
-    for (let i = 1; i <= 10; i++) {
-      const push = await run(["git", "push", "origin", `HEAD:${defaultBranch}`]);
-      if (push.exitCode === 0) { pushSucceeded = true; break; }
-      if (i < 10) {
-        console.log(`Push failed, rebasing and retrying (${i}/10)...`);
-        await run(["git", "pull", "--rebase", "-X", "theirs", "origin", defaultBranch]);
-        await new Promise(r => setTimeout(r, pushBackoffs[i - 1]));
+    try {
+      await checkedRun(["git", "add", "-A"]);
+      const { exitCode } = await run(["git", "diff", "--cached", "--quiet"]);
+      if (exitCode === 1) {
+        await checkedRun(["git", "commit", "-m", `society-intelligence: work on issue #${issueNumber}`]);
+      } else if (exitCode !== 0) {
+        throw new Error(`git diff failed with exit code ${exitCode}`);
       }
+
+      const pushBackoffs = [1000, 2000, 3000, 5000, 7000, 8000, 10000, 12000, 12000, 15000];
+      for (let i = 1; i <= 10; i++) {
+        const push = await run(["git", "push", "origin", `HEAD:${defaultBranch}`]);
+        if (push.exitCode === 0) { pushSucceeded = true; break; }
+        if (i < 10) {
+          console.log(`Push failed, rebasing and retrying (${i}/10)...`);
+          await checkedRun(["git", "pull", "--rebase", "origin", defaultBranch]);
+          await new Promise(r => setTimeout(r, pushBackoffs[i - 1]));
+        }
+      }
+      if (!pushSucceeded) throw new Error("All 10 push attempts failed.");
+    } catch (err) {
+      persistenceError = err instanceof Error ? err : new Error(String(err));
+      console.error("Could not persist agent changes:", persistenceError.message);
     }
     // ── Post reply as issue comment ──────────────────────────────────────────────
     // Always post the comment first so the user receives the agent's response even
     // if the push later fails.  The push failure throw (below) must come AFTER the
     // comment is posted — otherwise the throw would skip the comment entirely and
     // the user would get no reply.
-    const trimmedText = agentText.trim();
-    let commentBody = trimmedText.length > 0
-      ? trimmedText.slice(0, MAX_COMMENT_LENGTH)
-      : `✅ The agent ran successfully but did not produce a text response. Check the repository for any file changes that were made.\n\nFor full details, see the [workflow run logs](https://github.com/${repo}/actions).`;
+    let commentBody = agentText.slice(0, MAX_COMMENT_LENGTH);
     if (!pushSucceeded) {
       commentBody += `\n\n---\n⚠️ **Warning:** The agent's session state could not be pushed to the repository. Conversation context may not be preserved for follow-up comments. See the [workflow run logs](https://github.com/${repo}/actions) for details.`;
     }
@@ -430,17 +411,17 @@ async function main() {
     // Throw push failure AFTER the comment has been posted so the user always
     // receives the agent's response.  The throw still causes the workflow step to
     // fail and adds a 👎 reaction via the `finally` block.
-    if (!pushSucceeded) {
-      throw new Error(
-        "All 10 push attempts failed. Auto-reconciliation could not be completed. " +
-        "Session state was not persisted to remote. Check the workflow logs for details."
-      );
-    }
+    if (persistenceError) throw persistenceError;
 
     // Mark the run as successful so the `finally` block adds 👍 instead of 👎.
     succeeded = true;
 
   } finally {
+    try {
+      if (existsSync(rawOutputPath)) unlinkSync(rawOutputPath);
+    } catch (err) {
+      console.warn("Could not remove raw agent output:", err);
+    }
     // ── Guaranteed outcome reaction: 👍 on success, 👎 on error ─────────────────
     // This block always executes — even when the try block throws.  The 🚀 rocket
     // from the Authorize step is intentionally left in place; we only
@@ -464,4 +445,4 @@ async function main() {
   }
 }
 
-main();
+await main();

@@ -354,9 +354,11 @@ The packaging script will:
    - Description completeness and quality
    - File organization and resource references
 
-2. **Package** the skill if validation passes, creating a .skill file named after the skill (e.g., `my-skill.skill`) that includes all files and maintains the proper directory structure for distribution. The .skill file is a zip file with a .skill extension.
+2. **Package** the skill if validation passes, creating a .skill file named after the skill (e.g., `my-skill.skill`) that includes all files except the output archive itself and maintains the proper directory structure for distribution. The .skill file is a zip file with a .skill extension.
 
 If validation fails, the script will report the errors and exit without creating a package. Fix any validation errors and run the packaging command again.
+
+Both `name` and `description` must be nonempty strings. Script regressions can be run with `python -m unittest discover -s scripts -p 'test_*.py'` from this skill directory; PyYAML is required.
 
 ### Step 6: Iterate
 

@@ -41,6 +41,8 @@ Implemented surfaces:
 - `FINAL.md` as the design contract.
 - `validate-workflow.ts` and dispatcher tests.
 
+Runtime regression coverage also executes the composite dispatcher, rejects malformed settlement/delegation inputs, and checks failure propagation through the aggregate and consolidation jobs. Workflow validation parses YAML job fields rather than accepting comments or step text as mode gates. Diff censors use event-pinned base SHAs and treat unavailable diffs as errors.
+
 Not yet implemented:
 
 - settlement PR creation by `conversational-bee`;
